@@ -4,6 +4,7 @@
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/gap.h>
+#include <zephyr/bluetooth/hci_types.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/util.h>
@@ -53,6 +54,8 @@
 #define BLE_UPDATE_ADV_ERROR		BIT(0)
 #define BLE_UPDATE_SCAN_ERROR		BIT(1)
 #define BLE_UPDATE_STATUS_ERROR		BIT(2)
+#define SCAN_INTERVAL_MIN_UNITS		0x0004
+#define SCAN_INTERVAL_MAX_UNITS		0x4000
 
 
 
@@ -112,6 +115,8 @@ static void command_work_handler(struct k_work *work);
 static int radio_status_set(uint8_t mask, bool active);
 static void radio_status_set_local(uint8_t mask, bool active);
 static void adv_prepare_status_data(void);
+static bool adv_interval_valid(uint16_t interval);
+static bool scan_interval_valid(uint16_t interval);
 
 K_MSGQ_DEFINE(command_msgq, sizeof(struct command_msg), COMMAND_QUEUE_DEPTH, 1);
 static K_WORK_DEFINE(command_work, command_work_handler);
@@ -385,7 +390,6 @@ static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type,
 
 static int radio_params_validate(const struct radio_params *params)
 {
-	// TODO: Add validation for parameter ranges if needed
 	if (params->mode != HIGH_ACTIVITY && params->mode != LOW_ACTIVITY) {
 		return -EINVAL;
 	}
@@ -406,12 +410,38 @@ static int radio_params_validate(const struct radio_params *params)
 		return -EINVAL;
 	}
 
+	if (!adv_interval_valid(params->adv_interval_min) ||
+	    !adv_interval_valid(params->adv_interval_max) ||
+	    !adv_interval_valid(params->adv_interval_min_lowactivity) ||
+	    !adv_interval_valid(params->adv_interval_max_lowactivity)) {
+		return -EINVAL;
+	}
+
+	if (!scan_interval_valid(params->scan_interval) ||
+	    !scan_interval_valid(params->scan_interval_lowactivity) ||
+	    !scan_interval_valid(params->scan_window) ||
+	    !scan_interval_valid(params->scan_window_lowactivity)) {
+		return -EINVAL;
+	}
+
 	if (params->scan_window > params->scan_interval ||
 	    params->scan_window_lowactivity > params->scan_interval_lowactivity) {
 		return -EINVAL;
 	}
 
 	return 0;
+}
+
+static bool adv_interval_valid(uint16_t interval)
+{
+	return interval >= BT_LE_ADV_INTERVAL_MIN &&
+	       interval <= BT_LE_ADV_INTERVAL_MAX;
+}
+
+static bool scan_interval_valid(uint16_t interval)
+{
+	return interval >= SCAN_INTERVAL_MIN_UNITS &&
+	       interval <= SCAN_INTERVAL_MAX_UNITS;
 }
 
 /* Advertising is required. Scan failures are degraded mode and are exposed

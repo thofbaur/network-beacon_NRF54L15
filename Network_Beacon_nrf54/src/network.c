@@ -33,14 +33,15 @@ typedef struct {
 #define LENGTH_DATA_BUFFER 26000
 
 #define NETWORK_LIMIT_RSSI		80 // approx. 1-2m distance
+#define NETWORK_STATUS_UPDATE_DELAY_MS	30000
 
 #define DATA_LEVEL_1	0
 #define DATA_LEVEL_2	1
-#define DATA_LEVEL_3	2   // TODO 10
-#define DATA_LEVEL_4	3   // TODO 100
-#define DATA_LEVEL_5	500
-#define DATA_LEVEL_6	1000
-#define DATA_LEVEL_7	2000
+#define DATA_LEVEL_3	4   // TODO 10
+#define DATA_LEVEL_4	16   // TODO 100
+#define DATA_LEVEL_5	32 // TODO 500
+#define DATA_LEVEL_6	64 // TODO
+#define DATA_LEVEL_7	256 // TODO xxx
 
 #define P_SHIFT_STATUS_DATA 5
 static contact_entry	data_array[LENGTH_DATA_BUFFER]; // ID 1 Byte; time 3 Byte; RSSI 1 Byte
@@ -48,6 +49,11 @@ static uint16_t idx_read = 0;
 static uint16_t idx_write = 0;
 static uint16_t contact_count = 0;
 static K_MUTEX_DEFINE(contact_lock);
+
+static void network_status_update_handler(struct k_work *work);
+
+static K_WORK_DELAYABLE_DEFINE(network_status_update_work,
+			       network_status_update_handler);
 
 static void contact_time_put(uint8_t time[3], uint32_t uptime_s)
 {
@@ -163,10 +169,22 @@ static uint8_t contact_status_from_count(uint16_t number_dataset)
 	return 0;
 }
 
-void network_update_tag(void)
+static void network_schedule_tag_update(k_timeout_t delay)
+{
+	k_work_reschedule(&network_status_update_work, delay);
+}
+
+static void network_update_tag(void)
+{
+	network_schedule_tag_update(K_NO_WAIT);
+}
+
+static void network_status_update_handler(struct k_work *work)
 {
 	int err;
 	uint16_t number_dataset;
+
+	ARG_UNUSED(work);
 
 	k_mutex_lock(&contact_lock, K_FOREVER);
 	number_dataset = contact_count;
@@ -205,7 +223,7 @@ void network_evaluate_contact(const bt_addr_le_t *addr,
 		}
 		k_mutex_unlock(&contact_lock);
 
-		network_update_tag();
+		network_schedule_tag_update(K_MSEC(NETWORK_STATUS_UPDATE_DELAY_MS));
     }
 }
 
