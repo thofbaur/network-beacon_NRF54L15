@@ -1,4 +1,5 @@
 #include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/sys/printk.h>
 #include "radio_ids.h"
 #include "device.h"
 
@@ -11,7 +12,7 @@ static struct device_status status_device;
 
 uint8_t lookup_device_id(const bt_addr_le_t *addr)
 {
-    for (size_t i = 0; i < ARRAY_SIZE(known_device_table); i++) {
+    for (size_t i = 0; i < known_device_table_len; i++) {
         if (bt_addr_le_cmp(addr, &known_device_table[i].addr) == 0) {
             return known_device_table[i].id;
         }

@@ -467,17 +467,17 @@ static uint8_t update_ble_params(struct bt_le_scan_param *parameters_scan, struc
 static int scan_init(void)
 {
 	int err;
-	int failed_entries = 0;
+	size_t failed_entries = 0;
 
-	for (size_t i = 0; i < ARRAY_SIZE(known_device_table); i++) {
+	for (size_t i = 0; i < known_device_table_len; i++) {
 		err = bt_le_filter_accept_list_add(&known_device_table[i].addr);
 		if (err) {
-			printk("Failed to add device %u to filter list (err %d)\n", i, err);
+			printk("Failed to add device %u to filter list (err %d)\n", (unsigned int)i, err);
 			failed_entries++;
 		}
 	}
 
-	if (failed_entries == ARRAY_SIZE(known_device_table)) {
+	if (failed_entries == known_device_table_len) {
 		return -ENODEV;
 	}
 
@@ -615,9 +615,9 @@ int radio_start(void)
 	
 	err = bt_le_scan_start(&scan_params, scan_cb);
 	if (err) {
-		printk("Starting scanning failed (err %d)\n", err);
+		printk("Starting scanning failed (err %d), entering advertising-only degraded mode\n", err);
 		radio_status_set(RADIO_STATUS_SCAN_RUNTIME_ERROR, true);
-		return 0;
+		return 0;  // Scan failure is tolerated; advertising-only operation is intentional.
 	}
 
 	radio_status_set(RADIO_STATUS_SCAN_RUNTIME_ERROR, false);
