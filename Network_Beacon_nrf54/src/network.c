@@ -209,9 +209,9 @@ void network_evaluate_contact(const bt_addr_le_t *addr,
     }
 }
 
-uint8_t network_read_contact(uint8_t *buffer, uint16_t buffer_len)
+uint16_t network_read_contact(uint8_t *buffer, uint16_t buffer_len)
 {
-	uint8_t bytes_written = 0;
+	uint16_t bytes_written = 0;
 	bool entries_removed = false;
 	
 	k_mutex_lock(&contact_lock, K_FOREVER);

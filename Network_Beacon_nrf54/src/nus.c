@@ -193,7 +193,7 @@ static void send_networkdata(struct bt_conn *conn)
 {
 	uint16_t max_payload = bt_gatt_get_mtu(conn);
 	uint16_t payload_len;
-	uint8_t bytes_written = 0;
+	uint16_t bytes_written = 0;
 	uint16_t contact_payload_len;
 	uint8_t buffer[NUS_MAX_PAYLOAD_LEN];
 	
