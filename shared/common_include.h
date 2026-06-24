@@ -1,0 +1,30 @@
+#ifndef COMMON_INCLUDES_H_
+#define COMMON_INCLUDES_H_
+
+#define DSA_NUS_FLAG_TIME     0x01
+#define DSA_NUS_FLAG_DATA       0x02
+#define DSA_NUS_FLAG_VOLTAGE    0x03
+#define DSA_NUS_FLAG_CONTROL    0x04
+
+#define READOUT_LEVEL	0
+
+#define DATA_LEVEL_1	0
+#define DATA_LEVEL_2	1
+#define DATA_LEVEL_3	10
+#define DATA_LEVEL_4	100
+#define DATA_LEVEL_5	500
+#define DATA_LEVEL_6	1000
+#define DATA_LEVEL_7	2000
+
+
+
+#define DATA_LEVEL_MASK			0xE0
+#define P_SHIFT_STATUS_DATA 5
+
+
+
+#define ADV_POS_ID 0
+#define ADV_POS_RADIO_STATUS 1
+#define ADV_POS_NETWORK_STATUS 2
+
+#endif /* COMMON_INCLUDES_H_ */
