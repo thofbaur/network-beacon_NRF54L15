@@ -1,17 +1,27 @@
 #include <errno.h>
 #include <stdbool.h>
-#include <stdio.h>
 #include <string.h>
 
+#include <zephyr/device.h>
+#include <zephyr/drivers/flash.h>
+#include <zephyr/fs/nvs.h>
 #include <zephyr/kernel.h>
+#include <zephyr/storage/flash_map.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/sys/util.h>
 
 #include "network_storage.h"
-#include "param_storage.h"
 
-#define NETWORK_STORAGE_META_KEY "dsa/contact/meta"
-#define NETWORK_STORAGE_BLOCK_KEY_FMT "dsa/contact/b%02u"
+#define NETWORK_STORAGE_PARTITION contact_storage
+#define NETWORK_STORAGE_PARTITION_DEVICE \
+	FIXED_PARTITION_DEVICE(NETWORK_STORAGE_PARTITION)
+#define NETWORK_STORAGE_PARTITION_OFFSET \
+	FIXED_PARTITION_OFFSET(NETWORK_STORAGE_PARTITION)
+#define NETWORK_STORAGE_PARTITION_SIZE \
+	FIXED_PARTITION_SIZE(NETWORK_STORAGE_PARTITION)
+
+#define NETWORK_STORAGE_META_ID 1U
+#define NETWORK_STORAGE_BLOCK_ID_BASE 0x100U
 #define NETWORK_STORAGE_MAGIC 0x44534143U
 #define NETWORK_STORAGE_VERSION 1U
 
@@ -30,9 +40,18 @@ struct network_storage_block {
 	uint16_t data_len;
 	uint32_t sequence;
 	uint8_t data[NETWORK_STORAGE_BLOCK_DATA_LEN];
-};
+} __packed;
+
+BUILD_ASSERT((NETWORK_STORAGE_TOTAL_BYTES % NETWORK_STORAGE_BLOCK_BYTES) == 0,
+	     "Contact NVM reservation must be an exact number of blocks");
+BUILD_ASSERT((NETWORK_STORAGE_BLOCK_DATA_LEN % NETWORK_STORAGE_CONTACT_SIZE) == 0,
+	     "Contact NVM block payload must fit whole contacts");
+BUILD_ASSERT(NETWORK_STORAGE_TOTAL_BYTES == NETWORK_STORAGE_PARTITION_SIZE,
+	     "Contact NVM reservation must match contact_storage partition size");
 
 static struct network_storage_meta meta;
+static struct network_storage_block block_cache;
+static struct nvs_fs contact_fs;
 static bool initialized;
 static K_MUTEX_DEFINE(storage_lock);
 
@@ -46,26 +65,37 @@ static void reset_meta(void)
 	meta.oldest_offset = 0;
 }
 
-static void block_key(char *key, size_t key_len, uint32_t sequence)
+static uint16_t block_id(uint32_t sequence)
 {
-	snprintk(key, key_len, NETWORK_STORAGE_BLOCK_KEY_FMT,
-		 (unsigned int)(sequence % NETWORK_STORAGE_BLOCK_COUNT));
+	return NETWORK_STORAGE_BLOCK_ID_BASE +
+	       (uint16_t)(sequence % NETWORK_STORAGE_BLOCK_COUNT);
 }
 
 static int save_meta(void)
 {
-	return param_storage_save(NETWORK_STORAGE_META_KEY, &meta, sizeof(meta));
+	ssize_t written = nvs_write(&contact_fs, NETWORK_STORAGE_META_ID,
+				    &meta, sizeof(meta));
+
+	if (written < 0) {
+		return (int)written;
+	}
+	if (written != 0 && written != sizeof(meta)) {
+		return -EIO;
+	}
+
+	return 0;
 }
 
 static int load_block(uint32_t sequence, struct network_storage_block *block)
 {
-	char key[sizeof(NETWORK_STORAGE_BLOCK_KEY_FMT) + 2];
-	int err;
+	ssize_t read;
 
-	block_key(key, sizeof(key), sequence);
-	err = param_storage_load(key, block, sizeof(*block));
-	if (err) {
-		return err;
+	read = nvs_read(&contact_fs, block_id(sequence), block, sizeof(*block));
+	if (read < 0) {
+		return (int)read;
+	}
+	if (read != sizeof(*block)) {
+		return -EINVAL;
 	}
 
 	if (block->magic != NETWORK_STORAGE_MAGIC ||
@@ -81,14 +111,13 @@ static int load_block(uint32_t sequence, struct network_storage_block *block)
 
 static int delete_block(uint32_t sequence)
 {
-	char key[sizeof(NETWORK_STORAGE_BLOCK_KEY_FMT) + 2];
-
-	block_key(key, sizeof(key), sequence);
-	return param_storage_delete(key);
+	return nvs_delete(&contact_fs, block_id(sequence));
 }
 
 int network_storage_init(void)
 {
+	struct flash_pages_info info;
+	ssize_t read;
 	int err;
 
 	k_mutex_lock(&storage_lock, K_FOREVER);
@@ -98,11 +127,43 @@ int network_storage_init(void)
 		return 0;
 	}
 
-	err = param_storage_load(NETWORK_STORAGE_META_KEY, &meta, sizeof(meta));
-	if (err == -ENOENT) {
+	contact_fs.flash_device = NETWORK_STORAGE_PARTITION_DEVICE;
+	if (!device_is_ready(contact_fs.flash_device)) {
+		printk("Contact NVM flash device is not ready\n");
+		k_mutex_unlock(&storage_lock);
+		return -ENODEV;
+	}
+
+	contact_fs.offset = NETWORK_STORAGE_PARTITION_OFFSET;
+	err = flash_get_page_info_by_offs(contact_fs.flash_device,
+					  contact_fs.offset, &info);
+	if (err) {
+		printk("Failed to read contact NVM page info (err %d)\n", err);
+		k_mutex_unlock(&storage_lock);
+		return err;
+	}
+
+	contact_fs.sector_size = info.size;
+	contact_fs.sector_count = NETWORK_STORAGE_PARTITION_SIZE / info.size;
+
+	err = nvs_mount(&contact_fs);
+	if (err) {
+		printk("Failed to mount contact NVM storage (err %d)\n", err);
+		k_mutex_unlock(&storage_lock);
+		return err;
+	}
+
+	read = nvs_read(&contact_fs, NETWORK_STORAGE_META_ID, &meta, sizeof(meta));
+	if (read == -ENOENT) {
 		reset_meta();
 		err = save_meta();
-	} else if (!err &&
+	} else if (read < 0) {
+		err = (int)read;
+	} else if (read != sizeof(meta)) {
+		printk("Invalid contact NVM metadata length, resetting queue\n");
+		reset_meta();
+		err = save_meta();
+	} else if (
 		   (meta.magic != NETWORK_STORAGE_MAGIC ||
 		    meta.version != NETWORK_STORAGE_VERSION ||
 		    meta.pending_blocks > NETWORK_STORAGE_BLOCK_COUNT ||
@@ -123,9 +184,8 @@ int network_storage_init(void)
 
 int network_storage_append_block(const uint8_t *data, uint16_t len)
 {
-	struct network_storage_block block = { 0 };
-	char key[sizeof(NETWORK_STORAGE_BLOCK_KEY_FMT) + 2];
 	uint32_t sequence;
+	ssize_t written;
 	int err;
 
 	if (len == 0 || len > NETWORK_STORAGE_BLOCK_DATA_LEN ||
@@ -146,17 +206,22 @@ int network_storage_append_block(const uint8_t *data, uint16_t len)
 	}
 
 	sequence = meta.next_seq;
-	block.magic = NETWORK_STORAGE_MAGIC;
-	block.version = NETWORK_STORAGE_VERSION;
-	block.data_len = len;
-	block.sequence = sequence;
-	memcpy(block.data, data, len);
+	memset(&block_cache, 0, sizeof(block_cache));
+	block_cache.magic = NETWORK_STORAGE_MAGIC;
+	block_cache.version = NETWORK_STORAGE_VERSION;
+	block_cache.data_len = len;
+	block_cache.sequence = sequence;
+	memcpy(block_cache.data, data, len);
 
-	block_key(key, sizeof(key), sequence);
-	err = param_storage_save(key, &block, sizeof(block));
-	if (err) {
+	written = nvs_write(&contact_fs, block_id(sequence), &block_cache,
+			    sizeof(block_cache));
+	if (written < 0) {
 		k_mutex_unlock(&storage_lock);
-		return err;
+		return (int)written;
+	}
+	if (written != 0 && written != sizeof(block_cache)) {
+		k_mutex_unlock(&storage_lock);
+		return -EIO;
 	}
 
 	if (meta.pending_blocks == 0) {
@@ -177,7 +242,6 @@ int network_storage_append_block(const uint8_t *data, uint16_t len)
 
 uint16_t network_storage_peek(uint8_t *buffer, uint16_t buffer_len)
 {
-	struct network_storage_block block;
 	uint16_t bytes_written = 0;
 	int err;
 
@@ -192,7 +256,7 @@ uint16_t network_storage_peek(uint8_t *buffer, uint16_t buffer_len)
 		return 0;
 	}
 
-	err = load_block(meta.oldest_seq, &block);
+	err = load_block(meta.oldest_seq, &block_cache);
 	if (err) {
 		printk("Failed to read contact NVM block %u (err %d)\n",
 		       (unsigned int)meta.oldest_seq, err);
@@ -200,10 +264,10 @@ uint16_t network_storage_peek(uint8_t *buffer, uint16_t buffer_len)
 		return 0;
 	}
 
-	while ((meta.oldest_offset + bytes_written) < block.data_len &&
+	while ((meta.oldest_offset + bytes_written) < block_cache.data_len &&
 	       (buffer_len - bytes_written) >= NETWORK_STORAGE_CONTACT_SIZE) {
 		memcpy(&buffer[bytes_written],
-		       &block.data[meta.oldest_offset + bytes_written],
+		       &block_cache.data[meta.oldest_offset + bytes_written],
 		       NETWORK_STORAGE_CONTACT_SIZE);
 		bytes_written += NETWORK_STORAGE_CONTACT_SIZE;
 	}
@@ -214,7 +278,6 @@ uint16_t network_storage_peek(uint8_t *buffer, uint16_t buffer_len)
 
 uint16_t network_storage_drop(uint16_t bytes_to_drop)
 {
-	struct network_storage_block block;
 	uint16_t bytes_dropped = 0;
 	int err;
 
@@ -229,14 +292,14 @@ uint16_t network_storage_drop(uint16_t bytes_to_drop)
 		uint16_t remaining;
 		uint16_t drop_now;
 
-		err = load_block(meta.oldest_seq, &block);
+		err = load_block(meta.oldest_seq, &block_cache);
 		if (err) {
 			printk("Failed to drop contact NVM block %u (err %d)\n",
 			       (unsigned int)meta.oldest_seq, err);
 			break;
 		}
 
-		remaining = block.data_len - meta.oldest_offset;
+		remaining = block_cache.data_len - meta.oldest_offset;
 		drop_now = MIN(bytes_to_drop, remaining);
 		drop_now -= drop_now % NETWORK_STORAGE_CONTACT_SIZE;
 		if (drop_now == 0) {
@@ -247,7 +310,7 @@ uint16_t network_storage_drop(uint16_t bytes_to_drop)
 		bytes_to_drop -= drop_now;
 		bytes_dropped += drop_now;
 
-		if (meta.oldest_offset >= block.data_len) {
+		if (meta.oldest_offset >= block_cache.data_len) {
 			err = delete_block(meta.oldest_seq);
 			if (err && err != -ENOENT) {
 				printk("Failed to delete sent contact NVM block %u (err %d)\n",
@@ -277,7 +340,6 @@ uint16_t network_storage_drop(uint16_t bytes_to_drop)
 
 uint16_t network_storage_pending_bytes(void)
 {
-	struct network_storage_block block;
 	uint32_t bytes = 0;
 	uint32_t seq;
 
@@ -289,8 +351,8 @@ uint16_t network_storage_pending_bytes(void)
 
 	for (uint16_t i = 0; i < meta.pending_blocks; i++) {
 		seq = meta.oldest_seq + i;
-		if (!load_block(seq, &block)) {
-			bytes += block.data_len;
+		if (!load_block(seq, &block_cache)) {
+			bytes += block_cache.data_len;
 		}
 	}
 

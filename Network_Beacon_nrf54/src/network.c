@@ -50,6 +50,8 @@ static contact_entry	data_array[LENGTH_DATA_BUFFER]; // ID 1 Byte; time 3 Byte; 
 static uint16_t idx_read = 0;
 static uint16_t idx_write = 0;
 static uint16_t contact_count = 0;
+static bool contact_nvm_full;
+static uint8_t contact_flush_block[NETWORK_STORAGE_BLOCK_DATA_LEN];
 static K_MUTEX_DEFINE(contact_lock);
 
 static void network_status_update_handler(struct k_work *work);
@@ -206,7 +208,8 @@ static void network_schedule_flush_if_needed(void)
 	bool flush_needed;
 
 	k_mutex_lock(&contact_lock, K_FOREVER);
-	flush_needed = contact_count >= NETWORK_RAM_CONTACT_LIMIT;
+	flush_needed = !contact_nvm_full &&
+		       contact_count >= NETWORK_RAM_CONTACT_LIMIT;
 	k_mutex_unlock(&contact_lock);
 
 	if (flush_needed) {
@@ -216,7 +219,6 @@ static void network_schedule_flush_if_needed(void)
 
 static void network_flush_handler(struct k_work *work)
 {
-	uint8_t block[NETWORK_STORAGE_BLOCK_DATA_LEN];
 	uint16_t entries_to_flush;
 	uint16_t bytes_to_flush;
 	uint16_t read_index;
@@ -238,7 +240,7 @@ static void network_flush_handler(struct k_work *work)
 		read_index = idx_read;
 
 		for (uint16_t i = 0; i < entries_to_flush; i++) {
-			contact_entry_write(&block[i * CONTACT_ENTRY_SIZE],
+			contact_entry_write(&contact_flush_block[i * CONTACT_ENTRY_SIZE],
 					    &data_array[read_index]);
 			read_index = (read_index + 1) % LENGTH_DATA_BUFFER;
 		}
@@ -246,8 +248,12 @@ static void network_flush_handler(struct k_work *work)
 		/* Keep the lock until the write succeeds so RAM data is not dropped
 		 * or duplicated while the block is being persisted.
 		 */
-		err = network_storage_append_block(block, bytes_to_flush);
+		err = network_storage_append_block(contact_flush_block, bytes_to_flush);
 		if (err) {
+			if (err == -ENOSPC) {
+				contact_nvm_full = true;
+				printk("Contact NVM storage full; keeping contacts in RAM\n");
+			}
 			printk("Failed to flush contacts to NVM (err %d)\n", err);
 			k_mutex_unlock(&contact_lock);
 			return;
@@ -391,6 +397,9 @@ void network_drop_contact_bytes(uint16_t bytes_to_drop)
 	nvm_pending = network_storage_pending_bytes();
 	nvm_to_drop = MIN(bytes_to_drop, nvm_pending);
 	nvm_dropped = network_storage_drop(nvm_to_drop);
+	if (nvm_dropped > 0) {
+		contact_nvm_full = false;
+	}
 
 	if (nvm_dropped < nvm_to_drop) {
 		k_mutex_unlock(&contact_lock);

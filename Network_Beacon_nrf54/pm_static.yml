@@ -1,0 +1,55 @@
+tfm:
+  address: 0x0
+  region: flash_primary
+  size: 0x40000
+tfm_secure:
+  address: 0x0
+  region: flash_primary
+  size: 0x40000
+  span:
+  - tfm
+tfm_its:
+  address: 0x40000
+  region: flash_primary
+  size: 0x4000
+tfm_otp_nv_counters:
+  address: 0x44000
+  region: flash_primary
+  size: 0x2000
+tfm_ps:
+  address: 0x46000
+  region: flash_primary
+  size: 0x4000
+tfm_storage:
+  address: 0x40000
+  region: flash_primary
+  size: 0xa000
+  span:
+  - tfm_its
+  - tfm_otp_nv_counters
+  - tfm_ps
+app:
+  address: 0x4a000
+  region: flash_primary
+  size: 0x6a000
+tfm_nonsecure:
+  address: 0x4a000
+  region: flash_primary
+  size: 0x6a000
+  span:
+  - app
+contact_storage:
+  address: 0xb4000
+  region: flash_primary
+  size: 0xc7000 # TODO: tune fixed contact NVM partition size.
+settings_storage:
+  address: 0x17b000
+  region: flash_primary
+  size: 0x2000
+nonsecure_storage:
+  address: 0xb4000
+  region: flash_primary
+  size: 0xc9000
+  span:
+  - contact_storage
+  - settings_storage

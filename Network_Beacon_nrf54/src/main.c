@@ -42,7 +42,7 @@ int main(void)
 	}
 
 	/* TODO Remove: seed synthetic contacts for development testing. */
-	network_dev_fill_random_contacts(100);
+	network_dev_fill_random_contacts(24999);
 
 	k_sleep(K_FOREVER);
 	return 0;
