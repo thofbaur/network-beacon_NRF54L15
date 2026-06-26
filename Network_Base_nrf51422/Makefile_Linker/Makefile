@@ -35,7 +35,13 @@ SRC_FILES += \
   $(SDK_PATH)/components/libraries/bsp/bsp.c \
   $(SDK_PATH)/components/libraries/bsp/bsp_btn_ble.c \
   $(SDK_PATH)/components/libraries/bsp/bsp_nfc.c \
+  $(PROJ_DIR)/app.c \
+  $(PROJ_DIR)/button.c \
+  $(PROJ_DIR)/console_output.c \
+  $(PROJ_DIR)/led.c \
   $(PROJ_DIR)/main.c \
+  $(PROJ_DIR)/nus.c \
+  $(PROJ_DIR)/radio.c \
   $(SDK_PATH)/external/segger_rtt/RTT_Syscalls_GCC.c \
   $(SDK_PATH)/external/segger_rtt/SEGGER_RTT.c \
   $(SDK_PATH)/external/segger_rtt/SEGGER_RTT_printf.c \
@@ -109,7 +115,7 @@ INC_FOLDERS += \
   $(SDK_PATH)/components/libraries/util \
   $(SDK_PATH)/components/drivers_nrf/pwm \
   ../config \
-  ../../Include/ \
+  ../../Shared/ \
   $(SDK_PATH)/components/libraries/csense_drv \
   $(SDK_PATH)/components/libraries/csense \
   $(SDK_PATH)/components/drivers_nrf/rng \
