@@ -10,6 +10,7 @@ target_sources(app PRIVATE
 	src/main.c
 	src/network.c
 	src/network_dev.c
+	src/network_storage.c
 	src/nus.c
 	src/param_storage.c
 	src/radio.c

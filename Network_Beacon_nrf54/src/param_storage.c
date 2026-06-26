@@ -60,3 +60,15 @@ int param_storage_save(const char *key, const void *data, size_t len)
 
 	return settings_save_one(key, data, len);
 }
+
+int param_storage_delete(const char *key)
+{
+	int err;
+
+	err = param_storage_init();
+	if (err) {
+		return err;
+	}
+
+	return settings_delete(key);
+}
