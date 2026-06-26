@@ -17,9 +17,17 @@
 #include "defines.h"
 #include "network.h"
 
-#define NUS_CONNECTION_TIMEOUT_MS 20000
 #define NUS_ATT_NOTIFY_HEADER_LEN 3
 #define NUS_MAX_PAYLOAD_LEN (CONFIG_BT_L2CAP_TX_MTU - NUS_ATT_NOTIFY_HEADER_LEN)
+#define NUS_MAX_IN_FLIGHT 2
+#define NUS_SEND_SLOT_WAIT_MS 10
+#define NUS_SEND_SLOT_TIMEOUT_MS 1000
+#define NUS_SEND_RETRY_WAIT_MS 10
+#define NUS_SEND_RETRY_TIMEOUT_MS 1000
+#define NUS_TRANSFER_STACK_SIZE 2048
+#define NUS_TRANSFER_PRIORITY 5
+/* TODO: make NUS idle timeout configurable for production tuning. */
+#define NUS_IDLE_TIMEOUT_MS 20000
 
 static struct bt_conn *current_conn;
 static bool nus_notifications_enabled;
@@ -27,23 +35,87 @@ static bool disconnect_when_sent;
 static bool transfer_active;
 static atomic_t pending_nus_sends;
 static struct bt_gatt_exchange_params mtu_exchange_params;
+static struct bt_conn *transfer_conn;
 
-static void connection_timeout_handler(struct k_work *work);
+static void transfer_work_handler(struct k_work *work);
+static void nus_idle_timeout_handler(struct k_work *work);
+static void disconnect_nus_connection(struct bt_conn *conn);
 
-static K_WORK_DELAYABLE_DEFINE(connection_timeout_work, connection_timeout_handler);
+static K_WORK_DEFINE(transfer_work, transfer_work_handler);
+static K_WORK_DELAYABLE_DEFINE(nus_idle_timeout_work, nus_idle_timeout_handler);
+K_THREAD_STACK_DEFINE(transfer_stack, NUS_TRANSFER_STACK_SIZE);
+static struct k_work_q transfer_work_q;
+
+static void nus_idle_timeout_refresh(void)
+{
+	k_work_reschedule(&nus_idle_timeout_work, K_MSEC(NUS_IDLE_TIMEOUT_MS));
+}
+
+static void nus_idle_timeout_cancel(void)
+{
+	k_work_cancel_delayable(&nus_idle_timeout_work);
+}
+
+static void nus_idle_timeout_handler(struct k_work *work)
+{
+	struct bt_conn *conn;
+
+	ARG_UNUSED(work);
+
+	conn = current_conn;
+	if (!conn) {
+		return;
+	}
+
+	printk("NUS idle timeout, disconnecting\n");
+	disconnect_nus_connection(conn);
+}
 
 static int nus_send_tracked(struct bt_conn *conn, const void *data, uint16_t len)
 {
 	int err;
+	int64_t deadline;
+	int64_t retry_deadline;
 
-	atomic_inc(&pending_nus_sends);
-	err = bt_nus_send(conn, data, len);
-	if (err) {
-		atomic_dec(&pending_nus_sends);
-		return err;
+	if (!nus_notifications_enabled) {
+		return -EINVAL;
 	}
 
-	return 0;
+	deadline = k_uptime_get() + NUS_SEND_SLOT_TIMEOUT_MS;
+	while (atomic_get(&pending_nus_sends) >= NUS_MAX_IN_FLIGHT) {
+		if (current_conn != conn || !nus_notifications_enabled) {
+			return -ECONNRESET;
+		}
+
+		if (k_uptime_get() >= deadline) {
+			return -EAGAIN;
+		}
+
+		k_sleep(K_MSEC(NUS_SEND_SLOT_WAIT_MS));
+	}
+
+	atomic_inc(&pending_nus_sends);
+	retry_deadline = k_uptime_get() + NUS_SEND_RETRY_TIMEOUT_MS;
+	do {
+		err = bt_nus_send(conn, data, len);
+		if (!err) {
+			return 0;
+		}
+
+		if (err != -EAGAIN) {
+			break;
+		}
+
+		if (current_conn != conn || !nus_notifications_enabled) {
+			err = -ECONNRESET;
+			break;
+		}
+
+		k_sleep(K_MSEC(NUS_SEND_RETRY_WAIT_MS));
+	} while (k_uptime_get() < retry_deadline);
+
+	atomic_dec(&pending_nus_sends);
+	return err;
 }
 
 static void disconnect_nus_connection(struct bt_conn *conn)
@@ -51,42 +123,6 @@ static void disconnect_nus_connection(struct bt_conn *conn)
 	if (bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN)) {
 		printk("Failed to disconnect NUS connection\n");
 	}
-}
-
-static void refresh_connection_timeout(void)
-{
-	if (NUS_CONNECTION_TIMEOUT_MS == 0) {
-		return;
-	}
-
-	k_work_reschedule(&connection_timeout_work, K_MSEC(NUS_CONNECTION_TIMEOUT_MS));
-}
-
-static void cancel_connection_timeout(void)
-{
-	k_work_cancel_delayable(&connection_timeout_work);
-}
-
-static void connection_timeout_handler(struct k_work *work)
-{
-	struct bt_conn *conn;
-	int err;
-
-	ARG_UNUSED(work);
-
-	if (!current_conn) {
-		return;
-	}
-
-	conn = bt_conn_ref(current_conn);
-	printk("No NUS data received for %u ms, disconnecting\n", NUS_CONNECTION_TIMEOUT_MS);
-
-	err = bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
-	if (err) {
-		printk("Connection timeout disconnect failed (err %d)\n", err);
-	}
-
-	bt_conn_unref(conn);
 }
 
 static void print_conn_info(struct bt_conn *conn, const char *prefix)
@@ -177,20 +213,25 @@ static void request_connection_params(struct bt_conn *conn)
 	}
 }
 
-static void send_uptime(struct bt_conn *conn)
+static int send_uptime(struct bt_conn *conn)
 {
+	int err;
 	uint8_t buffer[1 + sizeof(uint32_t)];
 
 	buffer[0] = DSA_NUS_FLAG_TIME;
 	sys_put_be32((uint32_t)k_uptime_seconds(), &buffer[1]);
 
-	if (nus_send_tracked(conn, buffer, sizeof(buffer))) {
-		printk("Failed to send NUS uptime response\n");
+	err = nus_send_tracked(conn, buffer, sizeof(buffer));
+	if (err) {
+		printk("Failed to send NUS uptime response (err %d)\n", err);
 	}
+
+	return err;
 }
 
-static void send_networkdata(struct bt_conn *conn)
+static int send_networkdata(struct bt_conn *conn)
 {
+	int err;
 	uint16_t max_payload = bt_gatt_get_mtu(conn);
 	uint16_t payload_len;
 	uint16_t bytes_written = 0;
@@ -207,27 +248,32 @@ static void send_networkdata(struct bt_conn *conn)
 
 	payload_len = MIN(max_payload, (uint16_t)sizeof(buffer));
 	if (payload_len <= 1) {
-		return;
+		return -EMSGSIZE;
 	}
 
 	contact_payload_len = payload_len - 1;
 	buffer[0] = DSA_NUS_FLAG_DATA;
 
 	do {
-		bytes_written = network_read_contact(&buffer[1], contact_payload_len);
+		bytes_written = network_peek_contact(&buffer[1], contact_payload_len);
 		if (bytes_written > 0) {
-			if (nus_send_tracked(conn, buffer, bytes_written + 1)) {
-				printk("Failed to send NUS network data\n");
-				return;
+			err = nus_send_tracked(conn, buffer, bytes_written + 1);
+			if (err) {
+				printk("Failed to send NUS network data (err %d)\n", err);
+				return err;
 			}
+
+			network_drop_contact_bytes(bytes_written);
 		}
 	} while (bytes_written > 0);
+
+	return 0;
 }
 
 
 static void nus_received(struct bt_conn *conn, const uint8_t *const data, uint16_t len)
 {
-	refresh_connection_timeout();
+	nus_idle_timeout_refresh();
 
 	printk("NUS RX len=%u first=%02x %02x %02x %02x\n", len,
 	       len > 0 ? data[0] : 0,
@@ -240,25 +286,64 @@ static void nus_received(struct bt_conn *conn, const uint8_t *const data, uint16
 			printk("NUS transfer already active, ignoring start command\n");
 			return;
 		}
-
-		transfer_active = true;
-		printk("Starting sending data\n");
-		send_uptime(conn);
-		printk("Sent time\n");
-		send_networkdata(conn);
-
-		if (nus_send_tracked(conn, "finished", strlen("finished"))) {
-			printk("Failed to send NUS finished response\n");
-			transfer_active = false;
-		} else {
-			disconnect_when_sent = true;
+		if (!nus_notifications_enabled) {
+			printk("NUS transfer requested before notifications are enabled\n");
+			return;
 		}
 
+		transfer_active = true;
+		transfer_conn = bt_conn_ref(conn);
+		k_work_submit_to_queue(&transfer_work_q, &transfer_work);
 	}
+}
+
+static void transfer_work_handler(struct k_work *work)
+{
+	int err;
+	struct bt_conn *conn;
+
+	ARG_UNUSED(work);
+
+	conn = transfer_conn;
+	transfer_conn = NULL;
+	if (!conn) {
+		transfer_active = false;
+		return;
+	}
+
+	printk("Starting sending data\n");
+	err = send_uptime(conn);
+	if (err) {
+		transfer_active = false;
+		bt_conn_unref(conn);
+		return;
+	}
+
+	printk("Sent time\n");
+	err = send_networkdata(conn);
+	if (err) {
+		transfer_active = false;
+		bt_conn_unref(conn);
+		return;
+	}
+
+	err = nus_send_tracked(conn, "finished", strlen("finished"));
+
+	if (err) {
+		printk("Failed to send NUS finished response (err %d)\n", err);
+		transfer_active = false;
+	} else {
+		disconnect_when_sent = true;
+		printk("Sent finished message");
+	}
+
+	bt_conn_unref(conn);
 }
 
 static void nus_sent(struct bt_conn *conn)
 {
+	nus_idle_timeout_refresh();
+
 	if (atomic_get(&pending_nus_sends) > 0) {
 		atomic_dec(&pending_nus_sends);
 	}
@@ -302,7 +387,7 @@ static void connected(struct bt_conn *conn, uint8_t err)
 	}
 
 	current_conn = bt_conn_ref(conn);
-	refresh_connection_timeout();
+	nus_idle_timeout_refresh();
 	request_connection_params(conn);
 }
 
@@ -318,10 +403,14 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 		current_conn = NULL;
 	}
 
-	cancel_connection_timeout();
 	nus_notifications_enabled = false;
 	disconnect_when_sent = false;
 	transfer_active = false;
+	nus_idle_timeout_cancel();
+	if (transfer_conn) {
+		bt_conn_unref(transfer_conn);
+		transfer_conn = NULL;
+	}
 	atomic_set(&pending_nus_sends, 0);
 }
 
@@ -366,9 +455,14 @@ int nus_service_init(void)
 	err = bt_nus_init(&nus_cb);
 	if (err) {
 		printk("Failed to initialize NUS (err %d)\n", err);
+		return err;
 	}
 
-	return err;
+	k_work_queue_start(&transfer_work_q, transfer_stack,
+			   K_THREAD_STACK_SIZEOF(transfer_stack),
+			   NUS_TRANSFER_PRIORITY, NULL);
+
+	return 0;
 }
 
 bool nus_is_connected(void)

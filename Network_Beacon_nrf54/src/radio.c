@@ -533,6 +533,10 @@ int adv_update(void)
 
 	adv_prepare_status_data();
 
+	if (nus_is_connected()) {
+		return 0;
+	}
+
 	err = bt_le_adv_update_data(ad, ARRAY_SIZE(ad), NULL, 0);
 	if (err) {
 		memcpy(mfg_data, old_mfg_data, sizeof(mfg_data));

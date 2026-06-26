@@ -33,7 +33,7 @@ typedef struct {
 #define LENGTH_DATA_BUFFER 26000
 
 #define NETWORK_LIMIT_RSSI		80 // approx. 1-2m distance
-#define NETWORK_STATUS_UPDATE_DELAY_MS	30000
+#define NETWORK_STATUS_UPDATE_DELAY_MS	300
 
 #define DATA_LEVEL_1	0
 #define DATA_LEVEL_2	1
@@ -169,14 +169,18 @@ static uint8_t contact_status_from_count(uint16_t number_dataset)
 	return 0;
 }
 
-static void network_schedule_tag_update(k_timeout_t delay)
+static void network_schedule_tag_update_once(k_timeout_t delay)
 {
+	if (k_work_delayable_is_pending(&network_status_update_work)) {
+		return;
+	}
+
 	k_work_reschedule(&network_status_update_work, delay);
 }
 
 static void network_update_tag(void)
 {
-	network_schedule_tag_update(K_NO_WAIT);
+	k_work_reschedule(&network_status_update_work, K_NO_WAIT);
 }
 
 static void network_status_update_handler(struct k_work *work)
@@ -223,31 +227,82 @@ void network_evaluate_contact(const bt_addr_le_t *addr,
 		}
 		k_mutex_unlock(&contact_lock);
 
-		network_schedule_tag_update(K_MSEC(NETWORK_STATUS_UPDATE_DELAY_MS));
+		network_schedule_tag_update_once(K_MSEC(NETWORK_STATUS_UPDATE_DELAY_MS));
     }
+}
+
+/* TODO Remove: development-only helper for synthetic contact buffer data. */
+void network_dev_append_contact(uint8_t id, uint32_t uptime_s, uint8_t rssi)
+{
+	k_mutex_lock(&contact_lock, K_FOREVER);
+	data_array[idx_write].id = id;
+	contact_time_put(data_array[idx_write].time, uptime_s);
+	data_array[idx_write].rssi = rssi;
+	idx_write = (idx_write + 1) % LENGTH_DATA_BUFFER;
+
+	if (contact_count == LENGTH_DATA_BUFFER) {
+		idx_read = (idx_read + 1) % LENGTH_DATA_BUFFER;
+	} else {
+		contact_count++;
+	}
+	k_mutex_unlock(&contact_lock);
+
+	network_schedule_tag_update_once(K_MSEC(NETWORK_STATUS_UPDATE_DELAY_MS));
 }
 
 uint16_t network_read_contact(uint8_t *buffer, uint16_t buffer_len)
 {
+	uint16_t bytes_written;
+
+	bytes_written = network_peek_contact(buffer, buffer_len);
+	network_drop_contact_bytes(bytes_written);
+
+	return bytes_written;
+}
+
+uint16_t network_peek_contact(uint8_t *buffer, uint16_t buffer_len)
+{
 	uint16_t bytes_written = 0;
-	bool entries_removed = false;
+	uint16_t read_index;
+	uint16_t entries_available;
 	
 	k_mutex_lock(&contact_lock, K_FOREVER);
 
-	while (contact_count > 0)
+	read_index = idx_read;
+	entries_available = contact_count;
+
+	while (entries_available > 0)
 	{
 		if ((buffer_len - bytes_written) < CONTACT_ENTRY_SIZE) {
 			break;
 		}
 
-		buffer[bytes_written++] = data_array[idx_read].id;
-		buffer[bytes_written++] = data_array[idx_read].time[0];
-		buffer[bytes_written++] = data_array[idx_read].time[1];
-		buffer[bytes_written++] = data_array[idx_read].time[2];
-		buffer[bytes_written++] = data_array[idx_read].rssi;
+		buffer[bytes_written++] = data_array[read_index].id;
+		buffer[bytes_written++] = data_array[read_index].time[0];
+		buffer[bytes_written++] = data_array[read_index].time[1];
+		buffer[bytes_written++] = data_array[read_index].time[2];
+		buffer[bytes_written++] = data_array[read_index].rssi;
 
+		read_index = (read_index + 1) % LENGTH_DATA_BUFFER;
+		entries_available--;
+	}
+
+	k_mutex_unlock(&contact_lock);
+
+	return bytes_written;
+}
+
+void network_drop_contact_bytes(uint16_t bytes_to_drop)
+{
+	uint16_t entries_to_drop = bytes_to_drop / CONTACT_ENTRY_SIZE;
+	bool entries_removed = false;
+
+	k_mutex_lock(&contact_lock, K_FOREVER);
+
+	while (entries_to_drop > 0 && contact_count > 0) {
 		idx_read = (idx_read + 1) % LENGTH_DATA_BUFFER;
 		contact_count--;
+		entries_to_drop--;
 		entries_removed = true;
 	}
 
@@ -256,6 +311,4 @@ uint16_t network_read_contact(uint8_t *buffer, uint16_t buffer_len)
 	if (entries_removed) {
 		network_update_tag();
 	}
-
-	return bytes_written;
 }
