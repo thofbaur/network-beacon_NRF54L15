@@ -14,7 +14,7 @@
 #include <bluetooth/services/nus.h>
 
 #include "nus.h"
-#include "defines.h"
+#include "common_include.h"
 #include "network.h"
 
 #define NUS_ATT_NOTIFY_HEADER_LEN 3
@@ -229,6 +229,43 @@ static int send_uptime(struct bt_conn *conn)
 	return err;
 }
 
+static int send_uptime_contacts_voltage(struct bt_conn *conn)
+{
+	int err;
+	uint8_t buffer[1 + sizeof(uint32_t)+sizeof(uint16_t)+sizeof(uint16_t)];
+
+	buffer[0] = DSA_NUS_FLAG_TIME_CONTACTS_VOLTAGE;
+	sys_put_be32((uint32_t)k_uptime_seconds(), &buffer[1]);
+	sys_put_be32((uint16_t)network_get_contact_count(),&buffer[5]);
+	err = nus_send_tracked(conn, buffer, sizeof(buffer));
+	if (err) {
+		printk("Failed to send NUS uptime response (err %d)\n", err);
+	}
+
+	return err;
+}
+
+static int send_finished(struct bt_conn *conn)
+{
+	int err;
+	uint8_t buffer[1 + 8];
+
+	buffer[0] = DSA_NUS_FLAG_CONTROL;
+	
+	strcpy(&buffer[1], "finished");
+
+
+	err = nus_send_tracked(conn, buffer, sizeof(buffer));
+	if (err) {
+		printk("Failed to send NUS finished message (err %d)\n", err);
+	}
+
+	return err;
+
+}
+
+
+
 static int send_networkdata(struct bt_conn *conn)
 {
 	int err;
@@ -318,8 +355,18 @@ static void transfer_work_handler(struct k_work *work)
 		bt_conn_unref(conn);
 		return;
 	}
-
 	printk("Sent time\n");
+
+	
+	err = send_uptime_contacts_voltage(conn);
+	if (err) {
+		transfer_active = false;
+		bt_conn_unref(conn);
+		return;
+	}
+
+
+	printk("Starting sending data\n");
 	err = send_networkdata(conn);
 	if (err) {
 		transfer_active = false;
@@ -327,8 +374,7 @@ static void transfer_work_handler(struct k_work *work)
 		return;
 	}
 
-	err = nus_send_tracked(conn, "finished", strlen("finished"));
-
+	err = send_finished(conn);
 	if (err) {
 		printk("Failed to send NUS finished response (err %d)\n", err);
 		transfer_active = false;

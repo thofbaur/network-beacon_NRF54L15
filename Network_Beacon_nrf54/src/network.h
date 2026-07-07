@@ -19,5 +19,6 @@ uint16_t network_read_contact(uint8_t *buffer, uint16_t buffer_len);
 /* TODO Remove: development-only contact buffer filler hooks. */
 void network_dev_append_contact(uint8_t id, uint32_t uptime_s, uint8_t rssi);
 void network_dev_fill_random_contacts(uint16_t count);
+uint16_t network_get_contact_count();
 
 #endif /* NETWORK_H */

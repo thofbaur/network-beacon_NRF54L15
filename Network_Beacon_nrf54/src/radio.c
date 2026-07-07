@@ -9,7 +9,7 @@
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/util.h>
 //#include <bluetooth/scan.h>
-#include "defines.h"
+#include "common_include.h"
 #include "radio_ids.h"
 #include "network.h"
 #include "param_storage.h"
@@ -48,12 +48,7 @@
 #define COMMAND_DATA_MAX_LEN		31
 #define COMMAND_QUEUE_DEPTH		4
 #define RADIO_PARAMS_STORAGE_KEY	"dsa/radio"
-#define RADIO_STATUS_SCAN_RUNTIME_ERROR	BIT(0)
-#define RADIO_STATUS_NUS_ERROR		BIT(1)
-#define RADIO_STATUS_SCAN_CONFIG_ERROR	BIT(2)
-#define BLE_UPDATE_ADV_ERROR		BIT(0)
-#define BLE_UPDATE_SCAN_ERROR		BIT(1)
-#define BLE_UPDATE_STATUS_ERROR		BIT(2)
+
 #define SCAN_INTERVAL_MIN_UNITS		0x0004
 #define SCAN_INTERVAL_MAX_UNITS		0x4000
 

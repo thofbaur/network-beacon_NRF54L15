@@ -19,10 +19,11 @@ LOG_MODULE_DECLARE(network_base);
 #define NUS_WRITE_TIMEOUT K_MSEC(150)
 #define NUS_START_COMMAND "st"
 
-#define DSA_TIME_LEN 3
+#define DSA_TIME_LEN 4
 #define DSA_DATA_SET_LEN 5
-#define DSA_VOLTAGE_LEN 1
+#define DSA_VOLTAGE_LEN 2
 #define DSA_CONTROL_LEN 8
+#define DSA_TIME_CONTACT_VOLTAGE_LEN 8
 #define NUS_RX_IDLE_TIMEOUT K_SECONDS(10)
 
 static struct bt_nus_client nus_client;
@@ -58,6 +59,8 @@ static size_t expected_len_for_flag(uint8_t flag)
 	switch (flag) {
 	case DSA_NUS_FLAG_TIME:
 		return DSA_TIME_LEN;
+	case DSA_NUS_FLAG_TIME_CONTACTS_VOLTAGE:
+		return DSA_TIME_CONTACT_VOLTAGE_LEN;
 	case DSA_NUS_FLAG_DATA:
 		return DSA_DATA_SET_LEN;
 	case DSA_NUS_FLAG_VOLTAGE:
@@ -81,17 +84,39 @@ static void print_bytes(const uint8_t *data, size_t len)
 	}
 }
 
+static uint32_t uint32_be_decode(const uint8_t *data)
+{
+	return ((uint32_t)data[0] << 24) | ((uint32_t)data[1] << 16) | ((uint32_t)data[2] << 8)|data[3];
+}
+
 static uint32_t uint24_be_decode(const uint8_t *data)
 {
 	return ((uint32_t)data[0] << 16) | ((uint32_t)data[1] << 8) | data[2];
 }
 
+static uint32_t uint16_be_decode(const uint8_t *data)
+{
+	return ((uint32_t)data[0] << 8) | data[1];
+}
+
 static void handle_time_package(const uint8_t *data)
 {
-	uint32_t timer = uint24_be_decode(data);
+	uint32_t timer = uint32_be_decode(data);
 
 	printk("ID:%u Current Timer:%u\n", current_beacon_id, timer);
 }
+
+static void handle_time_contact_voltage_package(const uint8_t *data)
+{
+	uint32_t timer = uint32_be_decode(data);
+	uint16_t contact_count = uint16_be_decode(&data[4]);
+	uint16_t voltage = uint16_be_decode(&data[6]);
+	printk("ID:%u Current Timer:%u\n", current_beacon_id, timer);
+	printk("ID:%u Contact Count:%u\n", current_beacon_id, contact_count);
+	printk("ID:%u Voltage:%u (not implemented yet)\n", current_beacon_id, voltage);
+
+}
+
 
 static void handle_data_package(const uint8_t *data)
 {
@@ -114,16 +139,18 @@ static void handle_data_block(const uint8_t *data, size_t len)
 
 static void handle_voltage_package(const uint8_t *data)
 {
-	printk("ID:%u VOLTAGE:%u\n", current_beacon_id, data[0]);
+	uint16_t voltage = uint16_be_decode(data);
+
+	printk("ID:%u VOLTAGE:%u\n", current_beacon_id, voltage);
 }
 
 static void handle_control_package(const uint8_t *data)
 {
-	printk("ID:%u CONTROL raw=", current_beacon_id);
-	print_bytes(data, DSA_CONTROL_LEN);
-	printk("\n");
-
+	
 	if (memcmp(data, "finished", DSA_CONTROL_LEN) == 0) {
+		printk("ID:%u Transfer complete. Disconnecting", current_beacon_id);
+		printk("\n");
+	
 		LOG_INF("Received finished control package");
 		rx_idle_timeout_stop();
 
@@ -154,6 +181,13 @@ static void handle_complete_package(uint8_t flag, const uint8_t *data, size_t le
 		}
 		handle_time_package(data);
 		break;
+	case DSA_NUS_FLAG_TIME_CONTACTS_VOLTAGE:
+		if (len != DSA_TIME_CONTACT_VOLTAGE_LEN) {
+			LOG_WRN("Invalid TIME+CONTACT+VOLTAGE package length %u", (unsigned int)len);
+			break;
+		}	
+		handle_time_contact_voltage_package(data);
+		break;
 	case DSA_NUS_FLAG_DATA:
 		if ((len == 0) || ((len % DSA_DATA_SET_LEN) != 0)) {
 			LOG_WRN("Invalid DATA block length %u", (unsigned int)len);
@@ -176,6 +210,7 @@ static void handle_complete_package(uint8_t flag, const uint8_t *data, size_t le
 		handle_control_package(data);
 		break;
 	default:
+		handle_default_package(data, len);
 		break;
 	}
 }

@@ -5,7 +5,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 
-#include "defines.h"
+#include "common_include.h"
 #include "device.h"
 #include "network.h"
 #include "network_storage.h"
@@ -37,13 +37,7 @@ typedef struct {
 #define NETWORK_STATUS_UPDATE_DELAY_MS	300
 #define NETWORK_RAM_CONTACT_LIMIT	25000 /* TODO: tune RAM-to-NVM flush threshold. */
 
-#define DATA_LEVEL_1	0
-#define DATA_LEVEL_2	1
-#define DATA_LEVEL_3	4   // TODO 10
-#define DATA_LEVEL_4	16   // TODO 100
-#define DATA_LEVEL_5	32 // TODO 500
-#define DATA_LEVEL_6	64 // TODO
-#define DATA_LEVEL_7	256 // TODO xxx
+
 
 #define P_SHIFT_STATUS_DATA 5
 static contact_entry	data_array[LENGTH_DATA_BUFFER]; // ID 1 Byte; time 3 Byte; RSSI 1 Byte
@@ -426,4 +420,9 @@ void network_drop_contact_bytes(uint16_t bytes_to_drop)
 	} else if (nvm_dropped > 0) {
 		network_update_tag();
 	}
+}
+
+uint16_t network_get_contact_count()
+{
+	return contact_count;
 }

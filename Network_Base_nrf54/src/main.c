@@ -68,7 +68,7 @@ int main(void)
 		return 0;
 	}
 
-	printk("Network base ready. Press button0 to scan.\n");
+	printk("Network base ready. Press button0 to Start connecting. Press button1 to stop connecting\n");
 
 	for (;;) {
 		k_sleep(K_FOREVER);

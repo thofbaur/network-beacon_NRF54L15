@@ -8,7 +8,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 
-#include "defines.h"
+#include "common_include.h"
 #include "led.h"
 #include "param_storage.h"
 
