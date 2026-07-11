@@ -17,6 +17,7 @@
 #include "radio.h"
 #include "network.h"
 #include "led.h"
+#include "self_report.h"
 
 int main(void)
 {
@@ -25,6 +26,7 @@ int main(void)
 
 	printk("Starting DSA Network Beacon\n");
 	led_init();
+	self_report_init();
 	network_init();
 
 	/* Initialize the Bluetooth Subsystem */

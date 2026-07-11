@@ -21,6 +21,7 @@ LOG_MODULE_DECLARE(network_base);
 
 #define DSA_TIME_LEN 4
 #define DSA_DATA_SET_LEN 5
+#define DSA_SELF_REPORT_SET_LEN 3
 #define DSA_VOLTAGE_LEN 2
 #define DSA_CONTROL_LEN 8
 #define DSA_TIME_CONTACT_VOLTAGE_LEN 8
@@ -67,6 +68,8 @@ static size_t expected_len_for_flag(uint8_t flag)
 		return DSA_VOLTAGE_LEN;
 	case DSA_NUS_FLAG_CONTROL:
 		return DSA_CONTROL_LEN;
+	case DSA_NUS_FLAG_SELF_REPORT:
+		return DSA_SELF_REPORT_SET_LEN;
 	default:
 		return 0;
 	}
@@ -144,6 +147,18 @@ static void handle_voltage_package(const uint8_t *data)
 	printk("ID:%u VOLTAGE:%u\n", current_beacon_id, voltage);
 }
 
+static void handle_self_report_block(const uint8_t *data, size_t len)
+{
+	size_t report_count = len / DSA_SELF_REPORT_SET_LEN;
+
+	for (size_t i = 0; i < report_count; i++) {
+		uint32_t timer = uint24_be_decode(
+			&data[i * DSA_SELF_REPORT_SET_LEN]);
+
+		printk("ID:%u Self-report Timer:%u\n", current_beacon_id, timer);
+	}
+}
+
 static void handle_control_package(const uint8_t *data)
 {
 	
@@ -208,6 +223,14 @@ static void handle_complete_package(uint8_t flag, const uint8_t *data, size_t le
 			break;
 		}
 		handle_control_package(data);
+		break;
+	case DSA_NUS_FLAG_SELF_REPORT:
+		if ((len == 0) || ((len % DSA_SELF_REPORT_SET_LEN) != 0)) {
+			LOG_WRN("Invalid SELF_REPORT block length %u",
+				(unsigned int)len);
+			break;
+		}
+		handle_self_report_block(data, len);
 		break;
 	default:
 		handle_default_package(data, len);

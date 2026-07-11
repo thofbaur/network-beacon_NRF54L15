@@ -17,6 +17,7 @@ target_sources(app PRIVATE
 	src/param_storage.c
 	src/radio.c
 	src/radio_ids.c
+	src/self_report.c
 )
 
 zephyr_library_include_directories(${ZEPHYR_BASE}/samples/bluetooth)
