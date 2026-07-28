@@ -13,7 +13,7 @@
 #include "self_report.h"
 
 #define SELF_REPORT_LONG_PRESS_MS 3000
-#define SELF_REPORT_RING_COUNT 100
+#define SELF_REPORT_RING_COUNT 100 //TODO
 
 #if DT_NODE_HAS_STATUS(DT_ALIAS(button0), okay)
 #define SELF_REPORT_BUTTON_NODE DT_ALIAS(button0)
