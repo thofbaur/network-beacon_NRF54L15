@@ -155,7 +155,7 @@ static void handle_self_report_block(const uint8_t *data, size_t len)
 		uint32_t timer = uint24_be_decode(
 			&data[i * DSA_SELF_REPORT_SET_LEN]);
 
-		printk("ID:%u Self-report Timer:%u\n", current_beacon_id, timer);
+		printk("ID:%u  Self-report time: %u\n", current_beacon_id, timer);
 	}
 }
 

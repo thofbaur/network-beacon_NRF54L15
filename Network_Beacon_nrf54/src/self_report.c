@@ -215,6 +215,21 @@ uint16_t self_report_peek(uint16_t entry_offset, uint8_t *buffer,
 	return bytes_written;
 }
 
+void self_report_drop_bytes(uint16_t bytes_to_drop)
+{
+	uint16_t entries_to_drop = bytes_to_drop / SELF_REPORT_ENTRY_SIZE;
+
+	k_mutex_lock(&report_lock, K_FOREVER);
+
+	while (entries_to_drop > 0 && report_count > 0) {
+		read_index = (read_index + 1) % SELF_REPORT_RING_COUNT;
+		report_count--;
+		entries_to_drop--;
+	}
+
+	k_mutex_unlock(&report_lock);
+}
+
 uint16_t self_report_get_count(void)
 {
 	uint16_t count;

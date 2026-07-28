@@ -8,6 +8,7 @@
 void self_report_init(void);
 uint16_t self_report_peek(uint16_t entry_offset, uint8_t *buffer,
 			  uint16_t buffer_len);
+void self_report_drop_bytes(uint16_t bytes_to_drop);
 uint16_t self_report_get_count(void);
 
 #endif /* SELF_REPORT_H */

@@ -7,6 +7,7 @@ project(scan_adv)
 target_include_directories(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../shared)
 
 target_sources(app PRIVATE
+	src/battery_voltage.c
 	src/device.c
 	src/led.c
 	src/main.c
