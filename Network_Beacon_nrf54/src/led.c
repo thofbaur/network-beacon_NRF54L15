@@ -20,6 +20,9 @@
 #if DT_NODE_HAS_STATUS(DT_ALIAS(green_led), okay)
 #define LED_NODE DT_ALIAS(green_led)
 #define LED_ALIAS_NAME "green_led"
+#elif DT_NODE_HAS_STATUS(DT_NODELABEL(led1_green), okay)
+#define LED_NODE DT_NODELABEL(led1_green)
+#define LED_ALIAS_NAME "led1_green"
 #else
 #define LED_NODE DT_ALIAS(led0)
 #define LED_ALIAS_NAME "led0"
@@ -29,6 +32,10 @@
 	!DT_SAME_NODE(DT_ALIAS(red_led), LED_NODE)
 #define SELF_REPORT_LED_NODE DT_ALIAS(red_led)
 #define SELF_REPORT_LED_ALIAS_NAME "red_led"
+#elif DT_NODE_HAS_STATUS(DT_NODELABEL(led1_red), okay) && \
+	!DT_SAME_NODE(DT_NODELABEL(led1_red), LED_NODE)
+#define SELF_REPORT_LED_NODE DT_NODELABEL(led1_red)
+#define SELF_REPORT_LED_ALIAS_NAME "led1_red"
 #elif DT_NODE_HAS_STATUS(DT_ALIAS(led1), okay) && \
 	!DT_SAME_NODE(DT_ALIAS(led1), LED_NODE)
 #define SELF_REPORT_LED_NODE DT_ALIAS(led1)
