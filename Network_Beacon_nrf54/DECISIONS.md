@@ -29,3 +29,10 @@ Device identity mappings are kept in one place so scan filtering and local ID lo
 ## 2026-06-20: NUS Export Drains Stored Contacts
 
 The current export model treats a successful readout as consuming stored contact data.
+
+## 2026-07-11: Self-Report Uptime Uses 24 Bits
+
+Self-report timestamps are stored and exported as three big-endian bytes containing
+the low 24 bits of uptime seconds. Values above `0x00ffffff` therefore wrap modulo
+`0x01000000`. NUS receivers must parse flag `0x06` payloads as a sequence of
+three-byte entries instead of the previous four-byte entries.

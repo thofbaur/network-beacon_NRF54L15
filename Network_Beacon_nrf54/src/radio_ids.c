@@ -4,7 +4,7 @@ const struct known_device known_device_table[] = {
     {
         .addr = {
             .type = BT_ADDR_LE_RANDOM,
-            .a = { .val = { 0xB1, 0x7D, 0x76, 0x1a, 0x92, 0xd1 } }  // Developmentkit
+            .a = { .val = { 0xB1, 0x7D, 0x76, 0x1a, 0x92, 0xd1 } }  // Developmentkit von Tobias
         },
         .id = 1,
     },

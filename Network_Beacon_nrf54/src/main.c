@@ -17,6 +17,8 @@
 #include "radio.h"
 #include "network.h"
 #include "led.h"
+#include "self_report.h"
+#include "battery_voltage.h"
 
 int main(void)
 {
@@ -25,7 +27,12 @@ int main(void)
 
 	printk("Starting DSA Network Beacon\n");
 	led_init();
+	self_report_init();
 	network_init();
+	err = battery_voltage_init();
+	if (err) {
+		printk("Battery voltage initialization failed (err %d)\n", err);
+	}
 
 	/* Initialize the Bluetooth Subsystem */
 	err = radio_init();

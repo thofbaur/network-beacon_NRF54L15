@@ -14,8 +14,10 @@
 #include <bluetooth/services/nus.h>
 
 #include "nus.h"
+#include "battery_voltage.h"
 #include "common_include.h"
 #include "network.h"
+#include "self_report.h"
 
 #define NUS_ATT_NOTIFY_HEADER_LEN 3
 #define NUS_MAX_PAYLOAD_LEN (CONFIG_BT_L2CAP_TX_MTU - NUS_ATT_NOTIFY_HEADER_LEN)
@@ -232,11 +234,19 @@ static int send_uptime(struct bt_conn *conn)
 static int send_uptime_contacts_voltage(struct bt_conn *conn)
 {
 	int err;
-	uint8_t buffer[1 + sizeof(uint32_t)+sizeof(uint16_t)+sizeof(uint16_t)];
+	uint16_t voltage_mv;
+	uint8_t buffer[1 + sizeof(uint32_t) + sizeof(uint16_t) + sizeof(uint16_t)];
+
+	err = battery_voltage_read_mv(&voltage_mv);
+	if (err) {
+		printk("Failed to measure battery voltage (err %d)\n", err);
+		return err;
+	}
 
 	buffer[0] = DSA_NUS_FLAG_TIME_CONTACTS_VOLTAGE;
 	sys_put_be32((uint32_t)k_uptime_seconds(), &buffer[1]);
-	sys_put_be32((uint16_t)network_get_contact_count(),&buffer[5]);
+	sys_put_be16(network_get_contact_count(), &buffer[5]);
+	sys_put_be16(voltage_mv, &buffer[7]);
 	err = nus_send_tracked(conn, buffer, sizeof(buffer));
 	if (err) {
 		printk("Failed to send NUS uptime response (err %d)\n", err);
@@ -251,8 +261,7 @@ static int send_finished(struct bt_conn *conn)
 	uint8_t buffer[1 + 8];
 
 	buffer[0] = DSA_NUS_FLAG_CONTROL;
-	
-	strcpy(&buffer[1], "finished");
+	memcpy(&buffer[1], "finished", 8);
 
 
 	err = nus_send_tracked(conn, buffer, sizeof(buffer));
@@ -307,6 +316,55 @@ static int send_networkdata(struct bt_conn *conn)
 	return 0;
 }
 
+static int send_self_reports(struct bt_conn *conn)
+{
+	int err;
+	uint16_t max_payload = bt_gatt_get_mtu(conn);
+	uint16_t payload_len;
+	uint16_t report_payload_len;
+	uint16_t bytes_written;
+	uint16_t reports_sent = 0;
+	uint8_t buffer[NUS_MAX_PAYLOAD_LEN];
+
+	if (max_payload > NUS_ATT_NOTIFY_HEADER_LEN) {
+		max_payload -= NUS_ATT_NOTIFY_HEADER_LEN;
+	} else {
+		max_payload = 0;
+	}
+
+	payload_len = MIN(max_payload, (uint16_t)sizeof(buffer));
+	if (payload_len <= 1) {
+		return -EMSGSIZE;
+	}
+
+	report_payload_len = payload_len - 1;
+	report_payload_len -= report_payload_len % SELF_REPORT_ENTRY_SIZE;
+	if (report_payload_len == 0) {
+		return -EMSGSIZE;
+	}
+
+	do {
+		buffer[0] = DSA_NUS_FLAG_SELF_REPORT;
+		bytes_written = self_report_peek(0, &buffer[1],
+						 report_payload_len);
+		if (bytes_written == 0) {
+			break;
+		}
+
+		err = nus_send_tracked(conn, buffer, bytes_written + 1);
+		if (err) {
+			printk("Failed to send NUS self reports (err %d)\n", err);
+			return err;
+		}
+
+		self_report_drop_bytes(bytes_written);
+		reports_sent += bytes_written / SELF_REPORT_ENTRY_SIZE;
+	} while (bytes_written > 0);
+
+	printk("Sent %u self report(s)\n", reports_sent);
+	return 0;
+}
+
 
 static void nus_received(struct bt_conn *conn, const uint8_t *const data, uint16_t len)
 {
@@ -357,7 +415,6 @@ static void transfer_work_handler(struct k_work *work)
 	}
 	printk("Sent time\n");
 
-	
 	err = send_uptime_contacts_voltage(conn);
 	if (err) {
 		transfer_active = false;
@@ -365,7 +422,13 @@ static void transfer_work_handler(struct k_work *work)
 		return;
 	}
 
-
+	err = send_self_reports(conn);
+	if (err) {
+		transfer_active = false;
+		bt_conn_unref(conn);
+		return;
+	}
+	
 	printk("Starting sending data\n");
 	err = send_networkdata(conn);
 	if (err) {

@@ -31,7 +31,7 @@ typedef struct {
 
 
 
-#define LENGTH_DATA_BUFFER 26000
+#define LENGTH_DATA_BUFFER 26000  // ToDo fine tune Data buffer length
 
 #define NETWORK_LIMIT_RSSI		80 // approx. 1-2m distance
 #define NETWORK_STATUS_UPDATE_DELAY_MS	300
