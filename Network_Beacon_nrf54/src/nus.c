@@ -30,8 +30,6 @@
 #define NUS_CONTACT_COUNT_MAX 0x00ffffffU
 #define NUS_STORAGE_BUSY_RETRY_MS 50
 #define NUS_STORAGE_BUSY_TIMEOUT_MS 2000
-/* TODO: make NUS idle timeout configurable for production tuning. */
-#define NUS_IDLE_TIMEOUT_MS 20000
 
 static struct bt_conn *current_conn;
 static bool nus_notifications_enabled;
@@ -71,7 +69,9 @@ static void transfer_finish(void)
 
 static void nus_idle_timeout_refresh(void)
 {
-	k_work_reschedule(&nus_idle_timeout_work, K_MSEC(NUS_IDLE_TIMEOUT_MS));
+	k_work_reschedule(
+		&nus_idle_timeout_work,
+		K_MSEC(CONFIG_DSA_NUS_IDLE_TIMEOUT_MS));
 }
 
 static void nus_idle_timeout_cancel(void)

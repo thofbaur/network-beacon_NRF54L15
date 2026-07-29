@@ -15,9 +15,7 @@
 #include "self_report_storage.h"
 #include "storage_work_queue.h"
 
-#define SELF_REPORT_LONG_PRESS_MS 3000
 #define SELF_REPORT_DEBOUNCE_MS 40
-#define SELF_REPORT_RING_COUNT 100 //TODO
 
 #if DT_NODE_HAS_STATUS(DT_ALIAS(button0), okay)
 #define SELF_REPORT_BUTTON_NODE DT_ALIAS(button0)
@@ -33,13 +31,13 @@
 #define SELF_REPORT_BUTTON_ALIAS "button0/sw0"
 #endif
 
-BUILD_ASSERT(SELF_REPORT_RING_COUNT > 0,
+BUILD_ASSERT(CONFIG_DSA_SELF_REPORT_RING_COUNT > 0,
 	     "Self-report ring buffer must have at least one entry");
 BUILD_ASSERT(CONFIG_DSA_SELF_REPORT_FLUSH_BATCH <=
 	     CONFIG_DSA_SELF_REPORT_FLUSH_THRESHOLD,
 	     "Self-report flush batch must not exceed threshold");
 BUILD_ASSERT(CONFIG_DSA_SELF_REPORT_FLUSH_THRESHOLD <=
-	     SELF_REPORT_RING_COUNT,
+	     CONFIG_DSA_SELF_REPORT_RING_COUNT,
 	     "Self-report flush threshold exceeds RAM ring");
 BUILD_ASSERT(CONFIG_DSA_SELF_REPORT_FLUSH_BATCH <=
 	     SELF_REPORT_STORAGE_BLOCK_ENTRIES,
@@ -53,7 +51,8 @@ static const struct gpio_dt_spec self_report_button =
 	GPIO_DT_SPEC_GET_OR(SELF_REPORT_BUTTON_NODE, gpios, { 0 });
 
 static struct gpio_callback self_report_button_cb;
-static struct self_report_entry reports[SELF_REPORT_RING_COUNT];
+static struct self_report_entry
+	reports[CONFIG_DSA_SELF_REPORT_RING_COUNT];
 static uint16_t read_index;
 static uint16_t write_index;
 static uint16_t report_count;
@@ -116,7 +115,7 @@ static void flush_handler(struct k_work *work)
 	for (uint16_t i = 0; i < CONFIG_DSA_SELF_REPORT_FLUSH_BATCH; i++) {
 		memcpy(&flush_buffer[i * SELF_REPORT_ENTRY_SIZE],
 		       reports[index].uptime_s, SELF_REPORT_ENTRY_SIZE);
-		index = (index + 1) % SELF_REPORT_RING_COUNT;
+		index = (index + 1) % CONFIG_DSA_SELF_REPORT_RING_COUNT;
 	}
 	flush_active = true;
 	flush_read_index = read_index;
@@ -129,7 +128,7 @@ static void flush_handler(struct k_work *work)
 	if (!err && read_index == flush_read_index &&
 	    report_count >= CONFIG_DSA_SELF_REPORT_FLUSH_BATCH) {
 		read_index = (read_index + CONFIG_DSA_SELF_REPORT_FLUSH_BATCH) %
-			     SELF_REPORT_RING_COUNT;
+			     CONFIG_DSA_SELF_REPORT_RING_COUNT;
 		report_count -= CONFIG_DSA_SELF_REPORT_FLUSH_BATCH;
 		schedule_again =
 			report_count >= CONFIG_DSA_SELF_REPORT_FLUSH_THRESHOLD;
@@ -166,7 +165,7 @@ static void self_report_store(uint32_t uptime_s)
 {
 	k_mutex_lock(&report_lock, K_FOREVER);
 
-	if (report_count == SELF_REPORT_RING_COUNT) {
+	if (report_count == CONFIG_DSA_SELF_REPORT_RING_COUNT) {
 		k_mutex_unlock(&report_lock);
 		schedule_flush_if_needed();
 		printk("Self-report RAM full; dropping newest report while flushing\n");
@@ -174,10 +173,12 @@ static void self_report_store(uint32_t uptime_s)
 	}
 
 	self_report_time_put(reports[write_index].uptime_s, uptime_s);
-	write_index = (write_index + 1) % SELF_REPORT_RING_COUNT;
+	write_index = (write_index + 1) %
+		      CONFIG_DSA_SELF_REPORT_RING_COUNT;
 
-	if (report_count == SELF_REPORT_RING_COUNT) {
-		read_index = (read_index + 1) % SELF_REPORT_RING_COUNT;
+	if (report_count == CONFIG_DSA_SELF_REPORT_RING_COUNT) {
+		read_index = (read_index + 1) %
+			     CONFIG_DSA_SELF_REPORT_RING_COUNT;
 	} else {
 		report_count++;
 	}
@@ -231,7 +232,7 @@ static void debounce_handler(struct k_work *work)
 	button_pressed = pressed;
 	if (pressed) {
 		k_work_reschedule(&long_press_work,
-				  K_MSEC(SELF_REPORT_LONG_PRESS_MS));
+				  K_MSEC(CONFIG_DSA_SELF_REPORT_LONG_PRESS_MS));
 	} else {
 		k_work_cancel_delayable(&long_press_work);
 	}
@@ -303,7 +304,7 @@ int self_report_init(void)
 
 	if (button_pressed) {
 		k_work_reschedule(&long_press_work,
-				  K_MSEC(SELF_REPORT_LONG_PRESS_MS));
+				  K_MSEC(CONFIG_DSA_SELF_REPORT_LONG_PRESS_MS));
 	}
 
 	printk("Self-report button initialized on %s\n",
@@ -363,7 +364,8 @@ int self_report_export_begin(uint8_t *buffer, uint16_t buffer_len,
 			memcpy(&buffer[written], reports[index].uptime_s,
 			       SELF_REPORT_ENTRY_SIZE);
 			written += SELF_REPORT_ENTRY_SIZE;
-			index = (index + 1) % SELF_REPORT_RING_COUNT;
+			index = (index + 1) %
+				CONFIG_DSA_SELF_REPORT_RING_COUNT;
 			entries_available--;
 		}
 		if (written > 0) {
@@ -410,7 +412,8 @@ int self_report_export_commit(void)
 		}
 	} else if (source == SELF_REPORT_EXPORT_RAM &&
 		   entries <= report_count) {
-		read_index = (read_index + export_entries) % SELF_REPORT_RING_COUNT;
+		read_index = (read_index + export_entries) %
+			     CONFIG_DSA_SELF_REPORT_RING_COUNT;
 		report_count -= export_entries;
 	} else {
 		err = -EINVAL;

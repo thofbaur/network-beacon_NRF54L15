@@ -14,9 +14,6 @@
 #include "param_storage.h"
 
 #define LED_PARAMS_STORAGE_KEY "dsa/main"
-#define LED_BLINK_INTERVAL_MS 20000 // TODO  increase for production
-#define LED_BLINK_ON_MS 30
-#define LED_SELF_REPORT_ON_MS 2000
 
 #if DT_NODE_HAS_STATUS(DT_ALIAS(green_led), okay)
 #define LED_NODE DT_ALIAS(green_led)
@@ -119,7 +116,8 @@ static int self_report_led_set(bool on)
 static void led_schedule_next_blink(void)
 {
 	if (led_ready && params_led.led_active) {
-		k_work_reschedule(&led_blink_work, K_MSEC(LED_BLINK_INTERVAL_MS));
+		k_work_reschedule(&led_blink_work,
+				  K_MSEC(CONFIG_DSA_LED_BLINK_INTERVAL_MS));
 	}
 }
 
@@ -145,7 +143,8 @@ static void led_blink_handler(struct k_work *work)
 	}
 
 	if (!led_set(true)) {
-		k_work_reschedule(&led_blink_work, K_MSEC(LED_BLINK_ON_MS));
+		k_work_reschedule(&led_blink_work,
+				  K_MSEC(CONFIG_DSA_LED_BLINK_ON_MS));
 	}
 }
 
@@ -240,7 +239,7 @@ void led_signal_self_report(void)
 
 	if (!self_report_led_set(true)) {
 		k_work_reschedule(&led_self_report_work,
-				  K_MSEC(LED_SELF_REPORT_ON_MS));
+				  K_MSEC(CONFIG_DSA_SELF_REPORT_LED_ON_MS));
 	}
 }
 

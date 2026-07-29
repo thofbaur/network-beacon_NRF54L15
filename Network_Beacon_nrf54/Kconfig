@@ -13,7 +13,117 @@ config DSA_DEV_SYNTHETIC_CONTACTS
 
 endmenu
 
+menu "DSA LED behavior"
+
+config DSA_LED_BLINK_INTERVAL_MS
+	int "Status LED blink interval in milliseconds"
+	default 20000
+	range 100 3600000
+
+config DSA_LED_BLINK_ON_MS
+	int "Status LED on-time in milliseconds"
+	default 30
+	range 1 60000
+
+config DSA_SELF_REPORT_LED_ON_MS
+	int "Self-report LED on-time in milliseconds"
+	default 2000
+	range 1 60000
+
+endmenu
+
+menu "DSA network buffering"
+
+config DSA_NETWORK_CONTACT_RING_COUNT
+	int "Contact entries held in RAM"
+	default 24000
+	range 1 65535
+
+config DSA_NETWORK_DEFAULT_RSSI_THRESHOLD
+	int "Default RSSI magnitude threshold"
+	default 80
+	range 0 255
+
+config DSA_NETWORK_STATUS_UPDATE_DELAY_MS
+	int "Contact status update delay in milliseconds"
+	default 300
+	range 0 60000
+
+config DSA_NETWORK_RAM_FLUSH_THRESHOLD
+	int "RAM contact count that starts flash flushing"
+	default 23000
+	range 1 65535
+
+config DSA_NETWORK_STORAGE_TOTAL_BYTES
+	hex "Contact flash partition size in bytes"
+	default 0xc5000
+
+endmenu
+
+menu "DSA radio timing"
+
+config DSA_ADV_INTERVAL_MIN_MS
+	int "High-activity minimum advertising interval in milliseconds"
+	default 90
+	range 20 10240
+
+config DSA_ADV_INTERVAL_MAX_MS
+	int "High-activity maximum advertising interval in milliseconds"
+	default 120
+	range 20 10240
+
+config DSA_SCAN_WINDOW_MS
+	int "High-activity scan window in milliseconds"
+	default 120
+	range 3 10240
+
+config DSA_SCAN_INTERVAL_MS
+	int "High-activity scan interval in milliseconds"
+	default 10000
+	range 3 10240
+
+config DSA_LOW_ACTIVITY_ADV_INTERVAL_MIN_MS
+	int "Low-activity minimum advertising interval in milliseconds"
+	default 10000
+	range 20 10240
+
+config DSA_LOW_ACTIVITY_ADV_INTERVAL_MAX_MS
+	int "Low-activity maximum advertising interval in milliseconds"
+	default 10100
+	range 20 10240
+
+config DSA_LOW_ACTIVITY_SCAN_WINDOW_MS
+	int "Low-activity scan window in milliseconds"
+	default 100
+	range 3 10240
+
+config DSA_LOW_ACTIVITY_SCAN_INTERVAL_MS
+	int "Low-activity scan interval in milliseconds"
+	default 10000
+	range 3 10240
+
+endmenu
+
+menu "DSA NUS transport"
+
+config DSA_NUS_IDLE_TIMEOUT_MS
+	int "NUS connection idle timeout in milliseconds"
+	default 20000
+	range 1000 600000
+
+endmenu
+
 menu "DSA self-report storage"
+
+config DSA_SELF_REPORT_LONG_PRESS_MS
+	int "Button hold time required for a self report"
+	default 3000
+	range 100 60000
+
+config DSA_SELF_REPORT_RING_COUNT
+	int "Self-report entries held in RAM"
+	default 100
+	range 1 65535
 
 config DSA_SELF_REPORT_FLUSH_THRESHOLD
 	int "Self-report RAM flush threshold"
