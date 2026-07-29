@@ -12,13 +12,18 @@ target_sources(app PRIVATE
 	src/led.c
 	src/main.c
 	src/network.c
-	src/network_dev.c
 	src/network_storage.c
 	src/nus.c
 	src/param_storage.c
 	src/radio.c
 	src/radio_ids.c
 	src/self_report.c
+	src/self_report_storage.c
+	src/storage_work_queue.c
+)
+
+target_sources_ifdef(CONFIG_DSA_DEV_SYNTHETIC_CONTACTS app PRIVATE
+	src/network_dev.c
 )
 
 zephyr_library_include_directories(${ZEPHYR_BASE}/samples/bluetooth)

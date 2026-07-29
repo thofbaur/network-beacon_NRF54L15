@@ -4,8 +4,12 @@
 #include <stdint.h>
 
 #define NETWORK_STORAGE_CONTACT_SIZE 5
-#define NETWORK_STORAGE_TOTAL_BYTES 0xc7000 /* TODO: tune fixed NVM contact storage reservation. */
-#define NETWORK_STORAGE_BLOCK_BYTES 2048 /* TODO: tune NVM contact block size. */
+#define NETWORK_STORAGE_TOTAL_BYTES 0xc5000 /* Leaves two sectors for self reports. */
+#define NETWORK_STORAGE_SECTOR_BYTES 4096
+#define NETWORK_STORAGE_NVS_RESERVED_BYTES 64
+#define NETWORK_STORAGE_RESERVED_SECTORS 2
+#define NETWORK_STORAGE_BLOCK_BYTES \
+	(NETWORK_STORAGE_SECTOR_BYTES - NETWORK_STORAGE_NVS_RESERVED_BYTES)
 #define NETWORK_STORAGE_BLOCK_OVERHEAD 12
 #define NETWORK_STORAGE_BLOCK_DATA_LEN \
 	(((NETWORK_STORAGE_BLOCK_BYTES - NETWORK_STORAGE_BLOCK_OVERHEAD) / \
@@ -13,12 +17,15 @@
 #define NETWORK_STORAGE_BLOCK_CONTACTS \
 	(NETWORK_STORAGE_BLOCK_DATA_LEN / NETWORK_STORAGE_CONTACT_SIZE)
 #define NETWORK_STORAGE_BLOCK_COUNT \
-	(NETWORK_STORAGE_TOTAL_BYTES / NETWORK_STORAGE_BLOCK_BYTES)
+	((NETWORK_STORAGE_TOTAL_BYTES / NETWORK_STORAGE_SECTOR_BYTES) - \
+	 NETWORK_STORAGE_RESERVED_SECTORS)
 
 int network_storage_init(void);
 int network_storage_append_block(const uint8_t *data, uint16_t len);
-uint16_t network_storage_peek(uint8_t *buffer, uint16_t buffer_len);
-uint16_t network_storage_drop(uint16_t bytes_to_drop);
-uint16_t network_storage_pending_bytes(void);
+int network_storage_peek(uint8_t *buffer, uint16_t buffer_len,
+			 uint16_t *bytes_written);
+int network_storage_drop(uint16_t bytes_to_drop);
+int network_storage_get_contact_count(uint32_t *count);
+int network_storage_sync(void);
 
 #endif /* NETWORK_STORAGE_H */

@@ -9,6 +9,7 @@
 #include <zephyr/sys/printk.h>
 
 #include "common_include.h"
+#include "device.h"
 #include "led.h"
 #include "param_storage.h"
 
@@ -65,6 +66,8 @@ struct led_params {
 };
 
 static struct led_params params_led;
+static struct led_params command_old_params_led;
+static bool command_batch_active;
 static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET_OR(LED_NODE, gpios, { 0 });
 static const struct gpio_dt_spec self_report_led =
 	GPIO_DT_SPEC_GET_OR(SELF_REPORT_LED_NODE, gpios, { 0 });
@@ -241,33 +244,45 @@ void led_signal_self_report(void)
 	}
 }
 
+void led_command_begin(void)
+{
+	command_old_params_led = params_led;
+	command_batch_active = true;
+}
+
 void led_apply_command(uint8_t parameter, uint16_t value)
 {
-	struct led_params old_params_led = params_led;
-
 	switch (parameter) {
 	case P_MAIN_LED_ACTIVE:
 		params_led.led_active = value != 0;
 		printk("LED blink %s\n", params_led.led_active ? "enabled" : "disabled");
-		if (params_led.led_active) {
-			led_schedule_next_blink();
-		} else {
-			led_stop_blinking();
-		}
 		break;
 	case P_MAIN_RESET_PARAMS:
 		led_params_reset();
-		led_schedule_next_blink();
 		printk("LED parameters reset\n");
 		break;
 	default:
 		printk("Unknown LED parameter 0x%02x value %u\n", parameter, value);
 		break;
 	}
+}
 
-	if (memcmp(&old_params_led, &params_led, sizeof(params_led)) != 0) {
+void led_command_commit(void)
+{
+	if (!command_batch_active) {
+		return;
+	}
+	command_batch_active = false;
+
+	if (memcmp(&command_old_params_led, &params_led,
+		   sizeof(params_led)) != 0) {
 		int err = led_params_save();
 
+		if (params_led.led_active) {
+			led_schedule_next_blink();
+		} else {
+			led_stop_blinking();
+		}
 		if (err) {
 			printk("Failed to save LED parameters (err %d)\n", err);
 		}
@@ -276,12 +291,47 @@ void led_apply_command(uint8_t parameter, uint16_t value)
 
 int led_params_load(void)
 {
-	return param_storage_load(LED_PARAMS_STORAGE_KEY,
-				  &params_led, sizeof(params_led));
+	uint8_t stored;
+	int err;
+
+	err = param_storage_load(LED_PARAMS_STORAGE_KEY, &stored, sizeof(stored));
+	if (!err) {
+		if (stored > 1U) {
+			device_set_storage_fault(STORAGE_FAULT_LED_PARAMS, true);
+			return -EBADMSG;
+		}
+		params_led.led_active = stored != 0U;
+		device_set_storage_fault(STORAGE_FAULT_LED_PARAMS, false);
+		return 0;
+	}
+	if (err == -ENOENT) {
+		device_set_storage_fault(STORAGE_FAULT_LED_PARAMS, false);
+		return err;
+	}
+
+	err = param_storage_load_legacy(LED_PARAMS_STORAGE_KEY,
+					&stored, sizeof(stored));
+	if (err || stored > 1U) {
+		device_set_storage_fault(STORAGE_FAULT_LED_PARAMS, true);
+		return err ? err : -EBADMSG;
+	}
+
+	params_led.led_active = stored != 0U;
+	err = led_params_save();
+	if (!err) {
+		printk("Migrated LED parameters to versioned storage\n");
+	}
+	device_set_storage_fault(STORAGE_FAULT_LED_PARAMS, err != 0);
+	return err;
 }
 
 int led_params_save(void)
 {
-	return param_storage_save(LED_PARAMS_STORAGE_KEY,
-				  &params_led, sizeof(params_led));
+	uint8_t stored = params_led.led_active ? 1U : 0U;
+
+	int err = param_storage_save(LED_PARAMS_STORAGE_KEY,
+				    &stored, sizeof(stored));
+
+	device_set_storage_fault(STORAGE_FAULT_LED_PARAMS, err != 0);
+	return err;
 }

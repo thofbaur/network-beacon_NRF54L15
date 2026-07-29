@@ -36,3 +36,11 @@ Self-report timestamps are stored and exported as three big-endian bytes contain
 the low 24 bits of uptime seconds. Values above `0x00ffffff` therefore wrap modulo
 `0x01000000`. NUS receivers must parse flag `0x06` payloads as a sequence of
 three-byte entries instead of the previous four-byte entries.
+
+## 2026-07-29: NUS Contact Count Uses 24 Bits
+
+The `DSA_NUS_FLAG_TIME_CONTACTS_VOLTAGE` packet contains the contact count as
+an unsigned three-byte big-endian value. The packet layout is flag (1 byte),
+uptime (4 bytes), contact count (3 bytes), and battery voltage (2 bytes).
+Internal contact counting remains 32-bit; values above `0x00ffffff` saturate
+on the wire.

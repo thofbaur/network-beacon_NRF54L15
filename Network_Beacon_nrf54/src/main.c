@@ -27,8 +27,18 @@ int main(void)
 
 	printk("Starting DSA Network Beacon\n");
 	led_init();
-	self_report_init();
-	network_init();
+	err = self_report_init();
+	if (err) {
+		printk("Self-report subsystem initialization failed (err %d)\n",
+		       err);
+		return err;
+	}
+
+	err = network_init();
+	if (err) {
+		printk("Network subsystem initialization failed (err %d)\n", err);
+		return err;
+	}
 	err = battery_voltage_init();
 	if (err) {
 		printk("Battery voltage initialization failed (err %d)\n", err);
@@ -48,8 +58,9 @@ int main(void)
 		return err;
 	}
 
-	/* TODO Remove: seed synthetic contacts for development testing. */
+#if defined(CONFIG_DSA_DEV_SYNTHETIC_CONTACTS)
 	network_dev_fill_random_contacts(100);
+#endif
 
 	k_sleep(K_FOREVER);
 	return 0;

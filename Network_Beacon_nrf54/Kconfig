@@ -1,0 +1,40 @@
+mainmenu "DSA Network Beacon"
+
+source "Kconfig.zephyr"
+
+menu "DSA development options"
+
+config DSA_DEV_SYNTHETIC_CONTACTS
+	bool "Insert synthetic contacts at startup"
+	default n
+	help
+	  Build the development contact generator and insert 100 synthetic
+	  contacts at startup. Keep this disabled for production firmware.
+
+endmenu
+
+menu "DSA self-report storage"
+
+config DSA_SELF_REPORT_FLUSH_THRESHOLD
+	int "Self-report RAM flush threshold"
+	default 75
+	range 2 100
+	help
+	  Start moving the oldest reports to flash when this many reports
+	  are buffered in RAM.
+
+config DSA_SELF_REPORT_FLUSH_BATCH
+	int "Reports written per flash block"
+	default 64
+	range 1 64
+	help
+	  Number of oldest RAM reports reserved for each flash write.
+
+config DSA_SELF_REPORT_FLUSH_RETRY_MS
+	int "Self-report flash retry delay in milliseconds"
+	default 5000
+	range 100 60000
+	help
+	  Delay before retrying a failed self-report flash write.
+
+endmenu
