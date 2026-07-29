@@ -24,22 +24,8 @@
 #define NETWORK_STORAGE_META_ID 1U
 #define NETWORK_STORAGE_BLOCK_ID_BASE 0x100U
 #define NETWORK_STORAGE_MAGIC 0x44534143U
-#define NETWORK_STORAGE_META_VERSION 3U
-#define NETWORK_STORAGE_BLOCK_VERSION 2U
-#define NETWORK_STORAGE_LEGACY_BLOCK_VERSION 1U
-#define NETWORK_STORAGE_LEGACY_BLOCK_BYTES 2048U
-#define NETWORK_STORAGE_LEGACY_BLOCK_DATA_LEN 2035U
-#define NETWORK_STORAGE_BLOCK_ID_COUNT \
-	(NETWORK_STORAGE_TOTAL_BYTES / NETWORK_STORAGE_LEGACY_BLOCK_BYTES)
-
-struct network_storage_meta_v1 {
-	uint32_t magic;
-	uint16_t version;
-	uint16_t pending_blocks;
-	uint32_t oldest_seq;
-	uint32_t next_seq;
-	uint16_t oldest_offset;
-};
+#define NETWORK_STORAGE_META_VERSION 4U
+#define NETWORK_STORAGE_BLOCK_VERSION 3U
 
 struct network_storage_meta {
 	uint32_t magic;
@@ -89,7 +75,7 @@ static void reset_meta(void)
 static uint16_t block_id(uint32_t sequence)
 {
 	return NETWORK_STORAGE_BLOCK_ID_BASE +
-	       (uint16_t)(sequence % NETWORK_STORAGE_BLOCK_ID_COUNT);
+	       (uint16_t)(sequence % NETWORK_STORAGE_BLOCK_COUNT);
 }
 
 static int save_meta(void)
@@ -114,23 +100,12 @@ static int save_meta(void)
 static bool block_record_valid(const struct network_storage_block *block,
 			       ssize_t read)
 {
-	if (block->magic != NETWORK_STORAGE_MAGIC ||
-	    (block->data_len % NETWORK_STORAGE_CONTACT_SIZE) != 0) {
-		return false;
-	}
-
-	if (block->version == NETWORK_STORAGE_BLOCK_VERSION) {
-		return read == sizeof(*block) &&
-		       block->data_len <= NETWORK_STORAGE_BLOCK_DATA_LEN;
-	}
-
-	if (block->version == NETWORK_STORAGE_LEGACY_BLOCK_VERSION) {
-		return read == (NETWORK_STORAGE_BLOCK_OVERHEAD +
-				NETWORK_STORAGE_LEGACY_BLOCK_DATA_LEN) &&
-		       block->data_len <= NETWORK_STORAGE_LEGACY_BLOCK_DATA_LEN;
-	}
-
-	return false;
+	return read == sizeof(*block) &&
+	       block->magic == NETWORK_STORAGE_MAGIC &&
+	       block->version == NETWORK_STORAGE_BLOCK_VERSION &&
+	       block->data_len > 0 &&
+	       block->data_len <= NETWORK_STORAGE_BLOCK_DATA_LEN &&
+	       (block->data_len % NETWORK_STORAGE_CONTACT_SIZE) == 0;
 }
 
 static int load_block(uint32_t sequence, struct network_storage_block *block)
@@ -162,7 +137,7 @@ static int recover_meta_from_blocks(void)
 	int scan_err = 0;
 
 	/* First locate the newest valid sequence stored in any NVS block slot. */
-	for (uint16_t i = 0; i < NETWORK_STORAGE_BLOCK_ID_COUNT; i++) {
+	for (uint16_t i = 0; i < NETWORK_STORAGE_BLOCK_COUNT; i++) {
 		read = nvs_read(&contact_fs, NETWORK_STORAGE_BLOCK_ID_BASE + i,
 				&block_cache, sizeof(block_cache));
 		if (read < 0) {
@@ -267,57 +242,26 @@ static int recover_uncommitted_blocks(void)
 	return save_meta();
 }
 
-static int migrate_meta_v1(const struct network_storage_meta_v1 *old_meta)
-{
-	uint32_t pending_contacts = 0;
-	int err;
-
-	if (old_meta->magic != NETWORK_STORAGE_MAGIC ||
-	    old_meta->version != 1U ||
-	    old_meta->pending_blocks > NETWORK_STORAGE_BLOCK_COUNT ||
-	    old_meta->oldest_offset >= NETWORK_STORAGE_LEGACY_BLOCK_DATA_LEN ||
-	    (old_meta->oldest_offset % NETWORK_STORAGE_CONTACT_SIZE) != 0) {
-		return -EINVAL;
-	}
-
-	for (uint16_t i = 0; i < old_meta->pending_blocks; i++) {
-		uint16_t data_len;
-
-		err = load_block(old_meta->oldest_seq + i, &block_cache);
-		if (err) {
-			return err;
-		}
-
-		data_len = block_cache.data_len;
-		if (i == 0) {
-			if (old_meta->oldest_offset > data_len) {
-				return -EINVAL;
-			}
-			data_len -= old_meta->oldest_offset;
-		}
-		pending_contacts += data_len / NETWORK_STORAGE_CONTACT_SIZE;
-	}
-
-	meta.magic = NETWORK_STORAGE_MAGIC;
-	meta.version = NETWORK_STORAGE_META_VERSION;
-	meta.pending_blocks = old_meta->pending_blocks;
-	meta.pending_contacts = pending_contacts;
-	meta.oldest_seq = old_meta->oldest_seq;
-	meta.next_seq = old_meta->next_seq;
-	meta.oldest_offset = old_meta->oldest_offset;
-
-	return save_meta();
-}
-
 static int delete_block(uint32_t sequence)
 {
 	return nvs_delete(&contact_fs, block_id(sequence));
 }
 
+static int reset_storage(void)
+{
+	int err = nvs_clear(&contact_fs);
+
+	if (err) {
+		return err;
+	}
+
+	reset_meta();
+	return save_meta();
+}
+
 int network_storage_init(void)
 {
 	struct flash_pages_info info;
-	struct network_storage_meta_v1 old_meta;
 	ssize_t read;
 	int err;
 
@@ -367,51 +311,23 @@ int network_storage_init(void)
 	read = nvs_read(&contact_fs, NETWORK_STORAGE_META_ID, &meta, sizeof(meta));
 	if (read == -ENOENT) {
 		err = recover_meta_from_blocks();
-	} else if (read == sizeof(old_meta)) {
-		read = nvs_read(&contact_fs, NETWORK_STORAGE_META_ID,
-				&old_meta, sizeof(old_meta));
-		if (read == sizeof(old_meta)) {
-			err = migrate_meta_v1(&old_meta);
-			if (!err) {
-				printk("Migrated contact NVM metadata to version %u\n",
-				       NETWORK_STORAGE_META_VERSION);
-			}
-		} else {
-			err = read < 0 ? (int)read : -EINVAL;
-		}
 	} else if (read < 0) {
-		printk("Failed to read contact NVM metadata, attempting recovery (err %d)\n",
-		       (int)read);
-		err = recover_meta_from_blocks();
-	} else if (read != sizeof(meta)) {
-		printk("Invalid contact NVM metadata length, recovering queue\n");
-		err = recover_meta_from_blocks();
-	} else if (meta.magic == NETWORK_STORAGE_MAGIC &&
-		   meta.version == 2U &&
-		   meta.pending_blocks <= NETWORK_STORAGE_BLOCK_COUNT &&
-		   meta.pending_contacts <=
+		err = (int)read;
+	} else if (read != sizeof(meta) ||
+		   meta.magic != NETWORK_STORAGE_MAGIC ||
+		   meta.version != NETWORK_STORAGE_META_VERSION) {
+		printk("Incompatible contact NVM format; clearing stored contacts\n");
+		err = reset_storage();
+	} else if (meta.pending_blocks > NETWORK_STORAGE_BLOCK_COUNT ||
+		   meta.pending_contacts >
 			   ((uint32_t)meta.pending_blocks *
-			    (NETWORK_STORAGE_LEGACY_BLOCK_DATA_LEN /
-			     NETWORK_STORAGE_CONTACT_SIZE)) &&
-		   meta.oldest_offset < NETWORK_STORAGE_LEGACY_BLOCK_DATA_LEN &&
-		   (meta.oldest_offset % NETWORK_STORAGE_CONTACT_SIZE) == 0) {
-		meta.version = NETWORK_STORAGE_META_VERSION;
-		err = save_meta();
-		if (!err) {
-			printk("Migrated contact NVM metadata to version %u\n",
-			       NETWORK_STORAGE_META_VERSION);
-		}
-	} else if (
-		   (meta.magic != NETWORK_STORAGE_MAGIC ||
-		    meta.version != NETWORK_STORAGE_META_VERSION ||
-		    meta.pending_blocks > NETWORK_STORAGE_BLOCK_COUNT ||
-		    meta.pending_contacts >
-			    ((uint32_t)meta.pending_blocks *
-			     NETWORK_STORAGE_BLOCK_CONTACTS) ||
-		    meta.oldest_offset >= NETWORK_STORAGE_BLOCK_DATA_LEN ||
-		    (meta.oldest_offset % NETWORK_STORAGE_CONTACT_SIZE) != 0)) {
-		printk("Invalid contact NVM metadata, recovering queue\n");
-		err = recover_meta_from_blocks();
+			    NETWORK_STORAGE_BLOCK_CONTACTS) ||
+		   meta.oldest_offset >= NETWORK_STORAGE_BLOCK_DATA_LEN ||
+		   (meta.oldest_offset % NETWORK_STORAGE_CONTACT_SIZE) != 0 ||
+		   (meta.pending_blocks == 0 &&
+		    (meta.pending_contacts != 0 || meta.oldest_offset != 0))) {
+		printk("Invalid contact NVM metadata; clearing stored contacts\n");
+		err = reset_storage();
 	}
 
 	if (!err) {
@@ -427,6 +343,54 @@ int network_storage_init(void)
 
 	k_mutex_unlock(&storage_lock);
 	return err;
+}
+
+static int discard_oldest_block(void)
+{
+	struct network_storage_meta previous_meta;
+	uint32_t discarded_contacts;
+	uint32_t retired_sequence;
+	int err;
+
+	if (meta.pending_blocks == 0) {
+		return 0;
+	}
+
+	err = load_block(meta.oldest_seq, &block_cache);
+	if (err) {
+		return err;
+	}
+
+	previous_meta = meta;
+	retired_sequence = meta.oldest_seq;
+	discarded_contacts =
+		(block_cache.data_len - meta.oldest_offset) /
+		NETWORK_STORAGE_CONTACT_SIZE;
+	meta.oldest_seq++;
+	meta.pending_blocks--;
+	meta.oldest_offset = 0;
+	meta.pending_contacts -= MIN(meta.pending_contacts,
+				     discarded_contacts);
+	if (meta.pending_blocks == 0) {
+		meta.oldest_seq = meta.next_seq;
+	}
+
+	err = save_meta();
+	if (err) {
+		meta = previous_meta;
+		return err;
+	}
+
+	err = delete_block(retired_sequence);
+	if (err && err != -ENOENT) {
+		printk("Failed to delete overwritten contact NVM block %u (err %d)\n",
+		       (unsigned int)retired_sequence, err);
+		device_set_storage_fault(STORAGE_FAULT_CONTACT_DELETE, true);
+		return 0;
+	}
+
+	device_set_storage_fault(STORAGE_FAULT_CONTACT_DELETE, false);
+	return 0;
 }
 
 int network_storage_append_block(const uint8_t *data, uint16_t len)
@@ -450,8 +414,11 @@ int network_storage_append_block(const uint8_t *data, uint16_t len)
 	k_mutex_lock(&storage_lock, K_FOREVER);
 
 	if (meta.pending_blocks >= NETWORK_STORAGE_BLOCK_COUNT) {
-		k_mutex_unlock(&storage_lock);
-		return -ENOSPC;
+		err = discard_oldest_block();
+		if (err) {
+			k_mutex_unlock(&storage_lock);
+			return err;
+		}
 	}
 
 	previous_meta = meta;

@@ -4,6 +4,7 @@ cmake_minimum_required(VERSION 3.20.0)
 
 list(APPEND EXTRA_CONF_FILE
     "${CMAKE_CURRENT_SOURCE_DIR}/dsa.conf"
+    "${CMAKE_CURRENT_SOURCE_DIR}/dsa_runtime.conf"
 )
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(scan_adv)

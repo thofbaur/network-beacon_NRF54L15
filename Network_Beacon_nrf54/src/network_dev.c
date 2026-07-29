@@ -1,4 +1,4 @@
-/* TODO Remove: development-only synthetic network contact data filler. */
+/* Development-only synthetic network contact data generator. */
 
 #include <stdint.h>
 
@@ -8,7 +8,7 @@
 
 #include "network.h"
 
-/* TODO Remove: fills the contact ring with random development-test entries. */
+/* Fill the contact ring with random development-test entries. */
 void network_dev_fill_random_contacts(uint16_t count)
 {
 	uint32_t uptime_s = (uint32_t)k_uptime_seconds();
@@ -21,5 +21,5 @@ void network_dev_fill_random_contacts(uint16_t count)
 		network_dev_append_contact(id, uptime_s - age_s, rssi);
 	}
 
-	printk("TODO Remove: filled network contact buffer with %u random entries\n", count);
+	printk("Filled network contact buffer with %u synthetic entries\n", count);
 }

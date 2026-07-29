@@ -96,6 +96,18 @@ static int save_meta(void)
 	return 0;
 }
 
+static int reset_storage(void)
+{
+	int err = nvs_clear(&report_fs);
+
+	if (err) {
+		return err;
+	}
+
+	reset_meta();
+	return save_meta();
+}
+
 static bool block_record_valid(const struct self_report_storage_block *block,
 			       ssize_t read)
 {
@@ -275,21 +287,21 @@ int self_report_storage_init(void)
 	if (read == -ENOENT) {
 		err = recover_meta_from_blocks();
 	} else if (read < 0) {
-		printk("Failed to read self-report NVM metadata, attempting recovery (err %d)\n",
-		       (int)read);
-		err = recover_meta_from_blocks();
+		err = (int)read;
 	} else if (read != sizeof(meta) ||
 		   meta.magic != SELF_REPORT_STORAGE_MAGIC ||
-		   meta.version != SELF_REPORT_STORAGE_VERSION ||
-		   meta.pending_blocks > SELF_REPORT_STORAGE_BLOCK_COUNT ||
+		   meta.version != SELF_REPORT_STORAGE_VERSION) {
+		printk("Incompatible self-report NVM format; clearing stored reports\n");
+		err = reset_storage();
+	} else if (meta.pending_blocks > SELF_REPORT_STORAGE_BLOCK_COUNT ||
 		   meta.pending_reports >
 			   ((uint32_t)meta.pending_blocks *
 			    SELF_REPORT_STORAGE_BLOCK_ENTRIES) ||
 		   meta.oldest_offset >= SELF_REPORT_STORAGE_BLOCK_ENTRIES ||
 		   (meta.pending_blocks == 0 &&
 		    (meta.pending_reports != 0 || meta.oldest_offset != 0))) {
-		printk("Invalid self-report NVM metadata, recovering queue\n");
-		err = recover_meta_from_blocks();
+		printk("Invalid self-report NVM metadata; clearing stored reports\n");
+		err = reset_storage();
 	}
 
 	if (!err) {
@@ -306,6 +318,51 @@ out:
 	}
 	k_mutex_unlock(&storage_lock);
 	return err;
+}
+
+static int discard_oldest_block(void)
+{
+	struct self_report_storage_meta previous_meta;
+	uint32_t discarded_reports;
+	uint32_t retired_sequence;
+	int err;
+
+	if (meta.pending_blocks == 0) {
+		return 0;
+	}
+
+	err = load_block(meta.oldest_seq);
+	if (err) {
+		return err;
+	}
+
+	previous_meta = meta;
+	retired_sequence = meta.oldest_seq;
+	discarded_reports = block_cache.report_count - meta.oldest_offset;
+	meta.oldest_seq++;
+	meta.pending_blocks--;
+	meta.oldest_offset = 0;
+	meta.pending_reports -= MIN(meta.pending_reports, discarded_reports);
+	if (meta.pending_blocks == 0) {
+		meta.oldest_seq = meta.next_seq;
+	}
+
+	err = save_meta();
+	if (err) {
+		meta = previous_meta;
+		return err;
+	}
+
+	err = nvs_delete(&report_fs, block_id(retired_sequence));
+	if (err && err != -ENOENT) {
+		printk("Failed to delete overwritten self-report block %u (err %d)\n",
+		       (unsigned int)retired_sequence, err);
+		device_set_storage_fault(STORAGE_FAULT_SELF_REPORT_DELETE, true);
+		return 0;
+	}
+
+	device_set_storage_fault(STORAGE_FAULT_SELF_REPORT_DELETE, false);
+	return 0;
 }
 
 int self_report_storage_append(const uint8_t *reports, uint16_t report_count)
@@ -327,8 +384,11 @@ int self_report_storage_append(const uint8_t *reports, uint16_t report_count)
 
 	k_mutex_lock(&storage_lock, K_FOREVER);
 	if (meta.pending_blocks >= SELF_REPORT_STORAGE_BLOCK_COUNT) {
-		k_mutex_unlock(&storage_lock);
-		return -ENOSPC;
+		err = discard_oldest_block();
+		if (err) {
+			k_mutex_unlock(&storage_lock);
+			return err;
+		}
 	}
 
 	previous_meta = meta;

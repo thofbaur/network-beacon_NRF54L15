@@ -17,19 +17,10 @@
 
 #define SELF_REPORT_DEBOUNCE_MS 40
 
-#if DT_NODE_HAS_STATUS(DT_ALIAS(button0), okay)
-#define SELF_REPORT_BUTTON_NODE DT_ALIAS(button0)
-#define SELF_REPORT_BUTTON_ALIAS "button0"
-#elif DT_NODE_HAS_STATUS(DT_NODELABEL(button0), okay)
 #define SELF_REPORT_BUTTON_NODE DT_NODELABEL(button0)
-#define SELF_REPORT_BUTTON_ALIAS "button0"
-#elif DT_NODE_HAS_STATUS(DT_ALIAS(sw0), okay)
-#define SELF_REPORT_BUTTON_NODE DT_ALIAS(sw0)
-#define SELF_REPORT_BUTTON_ALIAS "sw0"
-#else
-#define SELF_REPORT_BUTTON_NODE DT_INVALID_NODE
-#define SELF_REPORT_BUTTON_ALIAS "button0/sw0"
-#endif
+
+BUILD_ASSERT(DT_NODE_HAS_STATUS(SELF_REPORT_BUTTON_NODE, okay),
+	     "Board must provide button0");
 
 BUILD_ASSERT(CONFIG_DSA_SELF_REPORT_RING_COUNT > 0,
 	     "Self-report ring buffer must have at least one entry");
@@ -48,7 +39,7 @@ struct self_report_entry {
 };
 
 static const struct gpio_dt_spec self_report_button =
-	GPIO_DT_SPEC_GET_OR(SELF_REPORT_BUTTON_NODE, gpios, { 0 });
+	GPIO_DT_SPEC_GET(SELF_REPORT_BUTTON_NODE, gpios);
 
 static struct gpio_callback self_report_button_cb;
 static struct self_report_entry
@@ -262,12 +253,6 @@ int self_report_init(void)
 		return err;
 	}
 
-	if (!self_report_button.port) {
-		printk("Self-report button alias %s not available\n",
-		       SELF_REPORT_BUTTON_ALIAS);
-		return 0;
-	}
-
 	if (!device_is_ready(self_report_button.port)) {
 		printk("Self-report button GPIO device not ready\n");
 		return 0;
@@ -307,8 +292,7 @@ int self_report_init(void)
 				  K_MSEC(CONFIG_DSA_SELF_REPORT_LONG_PRESS_MS));
 	}
 
-	printk("Self-report button initialized on %s\n",
-	       SELF_REPORT_BUTTON_ALIAS);
+	printk("Self-report button initialized on button0\n");
 	return 0;
 }
 

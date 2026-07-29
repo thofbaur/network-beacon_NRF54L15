@@ -41,7 +41,6 @@
 	BT_GAP_MS_TO_SCAN_INTERVAL(CONFIG_DSA_LOW_ACTIVITY_SCAN_INTERVAL_MS)
 #define HIGH_ACTIVITY				1
 #define LOW_ACTIVITY				0
-#define INITIAL_MODE				HIGH_ACTIVITY  //1 High Activity, 0 Low Activity
 #define COMMAND_TARGET_BROADCAST	0xff
 #define COMMAND_DATA_MAX_LEN		31
 #define COMMAND_QUEUE_DEPTH		4
@@ -126,8 +125,6 @@ static K_WORK_DEFINE(command_work, command_work_handler);
 static K_WORK_DEFINE(radio_status_update_work, radio_status_update_handler);
 static K_MUTEX_DEFINE(radio_operation_lock);
 
-bool radio_params_hardcoded=0;
-
 void set_ble_params(struct radio_params *params);
 static uint8_t update_ble_params(struct bt_le_scan_param *scan_params, struct bt_le_adv_param *adv_params);
 static int radio_params_validate(const struct radio_params *params);
@@ -145,8 +142,9 @@ void set_radio_params_init(void)
 	params_radio.scan_interval_lowactivity 	= (uint16_t)SCAN_INTERVAL_LOW_ACTIVITY;
 	params_radio.scan_window 			= (uint16_t)SCAN_WINDOW;
 	params_radio.scan_window_lowactivity 	= (uint16_t)SCAN_WINDOW_LOW_ACTIVITY;
-	params_radio.mode 					= INITIAL_MODE;
-	radio_params_hardcoded = 1;
+	params_radio.mode =
+		IS_ENABLED(CONFIG_DSA_RADIO_DEFAULT_HIGH_ACTIVITY) ?
+			HIGH_ACTIVITY : LOW_ACTIVITY;
 }
 
 static bool parse_advertisement_cb(struct bt_data *data, void *user_data)

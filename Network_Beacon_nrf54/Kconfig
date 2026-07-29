@@ -15,6 +15,10 @@ endmenu
 
 menu "DSA LED behavior"
 
+config DSA_DEFAULT_LED_ACTIVE
+	bool "Enable status LED blinking by default"
+	default y
+
 config DSA_LED_BLINK_INTERVAL_MS
 	int "Status LED blink interval in milliseconds"
 	default 20000
@@ -43,6 +47,10 @@ config DSA_NETWORK_DEFAULT_RSSI_THRESHOLD
 	int "Default RSSI magnitude threshold"
 	default 80
 	range 0 255
+
+config DSA_NETWORK_DEFAULT_TRACKING_ACTIVE
+	bool "Enable contact tracking by default"
+	default y
 
 config DSA_NETWORK_STATUS_UPDATE_DELAY_MS
 	int "Contact status update delay in milliseconds"
@@ -101,6 +109,10 @@ config DSA_LOW_ACTIVITY_SCAN_INTERVAL_MS
 	int "Low-activity scan interval in milliseconds"
 	default 10000
 	range 3 10240
+
+config DSA_RADIO_DEFAULT_HIGH_ACTIVITY
+	bool "Start in high-activity radio mode by default"
+	default y
 
 endmenu
 

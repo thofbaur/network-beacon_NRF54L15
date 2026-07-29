@@ -5,6 +5,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/atomic.h>
 #include <zephyr/sys/printk.h>
+#include <zephyr/sys/util.h>
 
 #include "common_include.h"
 #include "device.h"
@@ -88,8 +89,9 @@ static void reset_parameters(void)
 {
 	params_network.rssi_threshold =
 		CONFIG_DSA_NETWORK_DEFAULT_RSSI_THRESHOLD;
-	params_network.tracking_active = 1U;
-	atomic_set(&tracking_active, 1);
+	params_network.tracking_active =
+		IS_ENABLED(CONFIG_DSA_NETWORK_DEFAULT_TRACKING_ACTIVE);
+	atomic_set(&tracking_active, params_network.tracking_active);
 }
 
 
