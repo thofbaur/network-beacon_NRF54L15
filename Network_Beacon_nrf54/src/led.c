@@ -6,6 +6,7 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
+#include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/sys/util.h>
 
@@ -15,6 +16,7 @@
 #include "param_storage.h"
 
 #define LED_PARAMS_STORAGE_KEY "dsa/main"
+#define LED_PARAMS_STORED_SIZE 3U
 
 #if DT_NODE_HAS_STATUS(DT_NODELABEL(led1_green), okay)
 #define LED_NODE DT_NODELABEL(led1_green)
@@ -34,9 +36,12 @@
 
 BUILD_ASSERT(!DT_SAME_NODE(SELF_REPORT_LED_NODE, LED_NODE),
 	     "Status and self-report LEDs must be separate");
+BUILD_ASSERT(CONFIG_DSA_LED_BLINK_INTERVAL_MS % 1000 == 0,
+	     "Default status LED interval must use whole seconds");
 
 struct led_params {
 	bool led_active;
+	uint16_t interval_s;
 };
 
 static struct led_params params_led;
@@ -59,6 +64,7 @@ static K_WORK_DELAYABLE_DEFINE(led_self_report_work,
 static void led_params_reset(void)
 {
 	params_led.led_active = IS_ENABLED(CONFIG_DSA_DEFAULT_LED_ACTIVE);
+	params_led.interval_s = CONFIG_DSA_LED_BLINK_INTERVAL_MS / 1000;
 }
 
 static int led_set(bool on)
@@ -90,7 +96,7 @@ static void led_schedule_next_blink(void)
 {
 	if (led_ready && params_led.led_active) {
 		k_work_reschedule(&led_blink_work,
-				  K_MSEC(CONFIG_DSA_LED_BLINK_INTERVAL_MS));
+				  K_SECONDS(params_led.interval_s));
 	}
 }
 
@@ -203,8 +209,22 @@ void led_apply_command(uint8_t parameter, uint16_t value)
 {
 	switch (parameter) {
 	case P_MAIN_LED_ACTIVE:
+		if (value > 1U) {
+			printk("Rejecting invalid status-LED-active value %u\n",
+			       value);
+			return;
+		}
 		params_led.led_active = value != 0;
-		printk("LED blink %s\n", params_led.led_active ? "enabled" : "disabled");
+		printk("Status LED %s\n",
+		       params_led.led_active ? "enabled" : "disabled");
+		break;
+	case P_MAIN_LED_INTERVAL_S:
+		if (value == 0U) {
+			printk("Rejecting zero status LED interval\n");
+			return;
+		}
+		params_led.interval_s = value;
+		printk("Status LED interval set to %u s\n", value);
 		break;
 	case P_MAIN_RESET_PARAMS:
 		led_params_reset();
@@ -240,18 +260,37 @@ void led_command_commit(void)
 
 int led_params_load(void)
 {
-	uint8_t stored;
+	uint8_t stored[LED_PARAMS_STORED_SIZE];
+	uint8_t old_active;
 	int err;
 
-	err = param_storage_load(LED_PARAMS_STORAGE_KEY, &stored, sizeof(stored));
+	err = param_storage_load(LED_PARAMS_STORAGE_KEY, stored, sizeof(stored));
 	if (!err) {
-		if (stored > 1U) {
+		if (stored[0] > 1U || sys_get_be16(&stored[1]) == 0U) {
 			device_set_storage_fault(STORAGE_FAULT_LED_PARAMS, true);
 			return -EBADMSG;
 		}
-		params_led.led_active = stored != 0U;
+		params_led.led_active = stored[0] != 0U;
+		params_led.interval_s = sys_get_be16(&stored[1]);
 		device_set_storage_fault(STORAGE_FAULT_LED_PARAMS, false);
 		return 0;
+	}
+
+	/* Migrate the previous versioned record, which only stored active. */
+	err = param_storage_load(LED_PARAMS_STORAGE_KEY,
+				 &old_active, sizeof(old_active));
+	if (!err) {
+		if (old_active > 1U) {
+			device_set_storage_fault(STORAGE_FAULT_LED_PARAMS, true);
+			return -EBADMSG;
+		}
+		params_led.led_active = old_active != 0U;
+		err = led_params_save();
+		if (!err) {
+			printk("Migrated LED parameters with default interval\n");
+		}
+		device_set_storage_fault(STORAGE_FAULT_LED_PARAMS, err != 0);
+		return err;
 	}
 	if (err == -ENOENT) {
 		device_set_storage_fault(STORAGE_FAULT_LED_PARAMS, false);
@@ -259,13 +298,13 @@ int led_params_load(void)
 	}
 
 	err = param_storage_load_legacy(LED_PARAMS_STORAGE_KEY,
-					&stored, sizeof(stored));
-	if (err || stored > 1U) {
+					&old_active, sizeof(old_active));
+	if (err || old_active > 1U) {
 		device_set_storage_fault(STORAGE_FAULT_LED_PARAMS, true);
 		return err ? err : -EBADMSG;
 	}
 
-	params_led.led_active = stored != 0U;
+	params_led.led_active = old_active != 0U;
 	err = led_params_save();
 	if (!err) {
 		printk("Migrated LED parameters to versioned storage\n");
@@ -276,10 +315,13 @@ int led_params_load(void)
 
 int led_params_save(void)
 {
-	uint8_t stored = params_led.led_active ? 1U : 0U;
+	uint8_t stored[LED_PARAMS_STORED_SIZE];
+
+	stored[0] = params_led.led_active ? 1U : 0U;
+	sys_put_be16(params_led.interval_s, &stored[1]);
 
 	int err = param_storage_save(LED_PARAMS_STORAGE_KEY,
-				    &stored, sizeof(stored));
+				    stored, sizeof(stored));
 
 	device_set_storage_fault(STORAGE_FAULT_LED_PARAMS, err != 0);
 	return err;

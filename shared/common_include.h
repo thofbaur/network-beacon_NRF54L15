@@ -46,6 +46,7 @@
 
 /* Main parameters. */
 #define P_MAIN_LED_ACTIVE		(P_BASE_MAIN + 1)
+#define P_MAIN_LED_INTERVAL_S		(P_BASE_MAIN + 2)
 #define P_MAIN_RESET_PARAMS		(P_BASE_MAIN + 12)
 
 /* Network parameters. */

@@ -20,9 +20,9 @@ config DSA_DEFAULT_LED_ACTIVE
 	default y
 
 config DSA_LED_BLINK_INTERVAL_MS
-	int "Status LED blink interval in milliseconds"
+	int "Default status LED blink interval in milliseconds"
 	default 20000
-	range 100 3600000
+	range 1000 65535000
 
 config DSA_LED_BLINK_ON_MS
 	int "Status LED on-time in milliseconds"
