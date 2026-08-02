@@ -7,7 +7,7 @@
 - `led.c` owns LED behavior.
 - `device.c` owns identity lookup and shared status-byte access.
 - `param_storage.c` stays a generic persistence wrapper.
-- `defines.h` is the shared protocol constant boundary.
+- `shared/common_include.h` is the shared protocol constant boundary.
 
 # Architecture
 

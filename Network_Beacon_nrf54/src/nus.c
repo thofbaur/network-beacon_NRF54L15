@@ -21,21 +21,21 @@
 
 #define NUS_ATT_NOTIFY_HEADER_LEN 3
 #define NUS_MAX_PAYLOAD_LEN (CONFIG_BT_L2CAP_TX_MTU - NUS_ATT_NOTIFY_HEADER_LEN)
-#define NUS_MAX_IN_FLIGHT 2
-#define NUS_SEND_SLOT_WAIT_MS 10
-#define NUS_SEND_SLOT_TIMEOUT_MS 1000
 #define NUS_SEND_RETRY_WAIT_MS 10
 #define NUS_SEND_RETRY_TIMEOUT_MS 1000
+#define NUS_SEND_CONFIRM_TIMEOUT_MS 5000
 #define NUS_TRANSFER_STACK_SIZE 2048
 #define NUS_TRANSFER_PRIORITY 5
-/* TODO: make NUS idle timeout configurable for production tuning. */
-#define NUS_IDLE_TIMEOUT_MS 20000
+#define NUS_CONTACT_COUNT_SIZE 3U
+#define NUS_CONTACT_COUNT_MAX 0x00ffffffU
+#define NUS_STORAGE_BUSY_RETRY_MS 50
+#define NUS_STORAGE_BUSY_TIMEOUT_MS 2000
 
 static struct bt_conn *current_conn;
 static bool nus_notifications_enabled;
-static bool disconnect_when_sent;
 static bool transfer_active;
 static atomic_t pending_nus_sends;
+static atomic_t disconnect_when_sent;
 static struct bt_gatt_exchange_params mtu_exchange_params;
 static struct bt_conn *transfer_conn;
 
@@ -45,12 +45,33 @@ static void disconnect_nus_connection(struct bt_conn *conn);
 
 static K_WORK_DEFINE(transfer_work, transfer_work_handler);
 static K_WORK_DELAYABLE_DEFINE(nus_idle_timeout_work, nus_idle_timeout_handler);
+static K_SEM_DEFINE(nus_sent_sem, 0, 1);
+static K_MUTEX_DEFINE(nus_state_lock);
 K_THREAD_STACK_DEFINE(transfer_stack, NUS_TRANSFER_STACK_SIZE);
 static struct k_work_q transfer_work_q;
 
+static bool nus_connection_ready(struct bt_conn *conn)
+{
+	bool ready;
+
+	k_mutex_lock(&nus_state_lock, K_FOREVER);
+	ready = current_conn == conn && nus_notifications_enabled;
+	k_mutex_unlock(&nus_state_lock);
+	return ready;
+}
+
+static void transfer_finish(void)
+{
+	k_mutex_lock(&nus_state_lock, K_FOREVER);
+	transfer_active = false;
+	k_mutex_unlock(&nus_state_lock);
+}
+
 static void nus_idle_timeout_refresh(void)
 {
-	k_work_reschedule(&nus_idle_timeout_work, K_MSEC(NUS_IDLE_TIMEOUT_MS));
+	k_work_reschedule(
+		&nus_idle_timeout_work,
+		K_MSEC(CONFIG_DSA_NUS_IDLE_TIMEOUT_MS));
 }
 
 static void nus_idle_timeout_cancel(void)
@@ -64,51 +85,45 @@ static void nus_idle_timeout_handler(struct k_work *work)
 
 	ARG_UNUSED(work);
 
-	conn = current_conn;
+	k_mutex_lock(&nus_state_lock, K_FOREVER);
+	conn = current_conn ? bt_conn_ref(current_conn) : NULL;
+	k_mutex_unlock(&nus_state_lock);
 	if (!conn) {
 		return;
 	}
 
 	printk("NUS idle timeout, disconnecting\n");
 	disconnect_nus_connection(conn);
+	bt_conn_unref(conn);
 }
 
-static int nus_send_tracked(struct bt_conn *conn, const void *data, uint16_t len)
+static int nus_send_confirmed(struct bt_conn *conn, const void *data,
+			      uint16_t len)
 {
 	int err;
-	int64_t deadline;
 	int64_t retry_deadline;
 
-	if (!nus_notifications_enabled) {
+	if (!nus_connection_ready(conn)) {
 		return -EINVAL;
 	}
 
-	deadline = k_uptime_get() + NUS_SEND_SLOT_TIMEOUT_MS;
-	while (atomic_get(&pending_nus_sends) >= NUS_MAX_IN_FLIGHT) {
-		if (current_conn != conn || !nus_notifications_enabled) {
-			return -ECONNRESET;
-		}
-
-		if (k_uptime_get() >= deadline) {
-			return -EAGAIN;
-		}
-
-		k_sleep(K_MSEC(NUS_SEND_SLOT_WAIT_MS));
+	if (!atomic_cas(&pending_nus_sends, 0, 1)) {
+		return -EBUSY;
 	}
 
-	atomic_inc(&pending_nus_sends);
+	k_sem_reset(&nus_sent_sem);
 	retry_deadline = k_uptime_get() + NUS_SEND_RETRY_TIMEOUT_MS;
 	do {
 		err = bt_nus_send(conn, data, len);
 		if (!err) {
-			return 0;
+			break;
 		}
 
 		if (err != -EAGAIN) {
 			break;
 		}
 
-		if (current_conn != conn || !nus_notifications_enabled) {
+		if (!nus_connection_ready(conn)) {
 			err = -ECONNRESET;
 			break;
 		}
@@ -116,14 +131,47 @@ static int nus_send_tracked(struct bt_conn *conn, const void *data, uint16_t len
 		k_sleep(K_MSEC(NUS_SEND_RETRY_WAIT_MS));
 	} while (k_uptime_get() < retry_deadline);
 
-	atomic_dec(&pending_nus_sends);
-	return err;
+	if (err) {
+		atomic_set(&pending_nus_sends, 0);
+		return err;
+	}
+
+	err = k_sem_take(&nus_sent_sem, K_MSEC(NUS_SEND_CONFIRM_TIMEOUT_MS));
+	if (err) {
+		printk("Timed out waiting for NUS send confirmation\n");
+		/* A late sent callback cannot be matched to a future send by the
+		 * NUS API. Retire this send slot and disconnect this link before
+		 * accepting another transfer.
+		 */
+		atomic_cas(&pending_nus_sends, 1, 0);
+		k_mutex_lock(&nus_state_lock, K_FOREVER);
+		if (current_conn == conn) {
+			nus_notifications_enabled = false;
+		}
+		k_mutex_unlock(&nus_state_lock);
+		disconnect_nus_connection(conn);
+		return -ETIMEDOUT;
+	}
+
+	if (!nus_connection_ready(conn)) {
+		return -ECONNRESET;
+	}
+
+	return 0;
 }
 
 static void disconnect_nus_connection(struct bt_conn *conn)
 {
 	if (bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN)) {
 		printk("Failed to disconnect NUS connection\n");
+	}
+}
+
+static void disconnect_if_drained(struct bt_conn *conn)
+{
+	if (atomic_get(&pending_nus_sends) == 0 &&
+	    atomic_cas(&disconnect_when_sent, 1, 0)) {
+		disconnect_nus_connection(conn);
 	}
 }
 
@@ -223,7 +271,7 @@ static int send_uptime(struct bt_conn *conn)
 	buffer[0] = DSA_NUS_FLAG_TIME;
 	sys_put_be32((uint32_t)k_uptime_seconds(), &buffer[1]);
 
-	err = nus_send_tracked(conn, buffer, sizeof(buffer));
+	err = nus_send_confirmed(conn, buffer, sizeof(buffer));
 	if (err) {
 		printk("Failed to send NUS uptime response (err %d)\n", err);
 	}
@@ -234,20 +282,27 @@ static int send_uptime(struct bt_conn *conn)
 static int send_uptime_contacts_voltage(struct bt_conn *conn)
 {
 	int err;
-	uint16_t voltage_mv;
-	uint8_t buffer[1 + sizeof(uint32_t) + sizeof(uint16_t) + sizeof(uint16_t)];
+	uint16_t voltage_mv = UINT16_MAX;
+	uint32_t contact_count;
+	uint8_t buffer[1 + sizeof(uint32_t) + NUS_CONTACT_COUNT_SIZE +
+		       sizeof(uint16_t)];
 
 	err = battery_voltage_read_mv(&voltage_mv);
 	if (err) {
-		printk("Failed to measure battery voltage (err %d)\n", err);
+		printk("Battery voltage unavailable (err %d)\n", err);
+	}
+
+	err = network_get_contact_count(&contact_count);
+	if (err) {
+		printk("Contact count unavailable (err %d)\n", err);
 		return err;
 	}
 
 	buffer[0] = DSA_NUS_FLAG_TIME_CONTACTS_VOLTAGE;
 	sys_put_be32((uint32_t)k_uptime_seconds(), &buffer[1]);
-	sys_put_be16(network_get_contact_count(), &buffer[5]);
-	sys_put_be16(voltage_mv, &buffer[7]);
-	err = nus_send_tracked(conn, buffer, sizeof(buffer));
+	sys_put_be24(MIN(contact_count, NUS_CONTACT_COUNT_MAX), &buffer[5]);
+	sys_put_be16(voltage_mv, &buffer[8]);
+	err = nus_send_confirmed(conn, buffer, sizeof(buffer));
 	if (err) {
 		printk("Failed to send NUS uptime response (err %d)\n", err);
 	}
@@ -264,7 +319,7 @@ static int send_finished(struct bt_conn *conn)
 	memcpy(&buffer[1], "finished", 8);
 
 
-	err = nus_send_tracked(conn, buffer, sizeof(buffer));
+	err = nus_send_confirmed(conn, buffer, sizeof(buffer));
 	if (err) {
 		printk("Failed to send NUS finished message (err %d)\n", err);
 	}
@@ -278,6 +333,8 @@ static int send_finished(struct bt_conn *conn)
 static int send_networkdata(struct bt_conn *conn)
 {
 	int err;
+	int sync_err;
+	int64_t retry_deadline;
 	uint16_t max_payload = bt_gatt_get_mtu(conn);
 	uint16_t payload_len;
 	uint16_t bytes_written = 0;
@@ -301,24 +358,57 @@ static int send_networkdata(struct bt_conn *conn)
 	buffer[0] = DSA_NUS_FLAG_DATA;
 
 	do {
-		bytes_written = network_peek_contact(&buffer[1], contact_payload_len);
+		retry_deadline = k_uptime_get() + NUS_STORAGE_BUSY_TIMEOUT_MS;
+		do {
+			err = network_contact_export_begin(
+				&buffer[1], contact_payload_len, &bytes_written);
+			if (err != -EBUSY) {
+				break;
+			}
+			if (!nus_connection_ready(conn)) {
+				return -ENOTCONN;
+			}
+			k_sleep(K_MSEC(NUS_STORAGE_BUSY_RETRY_MS));
+		} while (k_uptime_get() < retry_deadline);
+		if (err) {
+			printk("Failed to reserve network data (err %d)\n", err);
+			return err;
+		}
+
 		if (bytes_written > 0) {
-			err = nus_send_tracked(conn, buffer, bytes_written + 1);
+			err = nus_send_confirmed(conn, buffer, bytes_written + 1);
 			if (err) {
 				printk("Failed to send NUS network data (err %d)\n", err);
+				network_contact_export_abort();
+				sync_err = network_sync_contact_storage();
+				if (sync_err) {
+					printk("Failed to checkpoint contact storage (err %d)\n",
+					       sync_err);
+				}
 				return err;
 			}
 
-			network_drop_contact_bytes(bytes_written);
+			err = network_contact_export_commit();
+			if (err) {
+				printk("Failed to commit sent network data (err %d)\n", err);
+				return err;
+			}
 		}
 	} while (bytes_written > 0);
 
-	return 0;
+	sync_err = network_sync_contact_storage();
+	if (sync_err) {
+		printk("Failed to checkpoint contact storage (err %d)\n",
+		       sync_err);
+	}
+
+	return sync_err;
 }
 
 static int send_self_reports(struct bt_conn *conn)
 {
 	int err;
+	int64_t retry_deadline;
 	uint16_t max_payload = bt_gatt_get_mtu(conn);
 	uint16_t payload_len;
 	uint16_t report_payload_len;
@@ -345,19 +435,38 @@ static int send_self_reports(struct bt_conn *conn)
 
 	do {
 		buffer[0] = DSA_NUS_FLAG_SELF_REPORT;
-		bytes_written = self_report_peek(0, &buffer[1],
-						 report_payload_len);
+		retry_deadline = k_uptime_get() + NUS_STORAGE_BUSY_TIMEOUT_MS;
+		do {
+			err = self_report_export_begin(
+				&buffer[1], report_payload_len, &bytes_written);
+			if (err != -EBUSY) {
+				break;
+			}
+			if (!nus_connection_ready(conn)) {
+				return -ENOTCONN;
+			}
+			k_sleep(K_MSEC(NUS_STORAGE_BUSY_RETRY_MS));
+		} while (k_uptime_get() < retry_deadline);
+		if (err) {
+			printk("Failed to reserve self reports (err %d)\n", err);
+			return err;
+		}
 		if (bytes_written == 0) {
 			break;
 		}
 
-		err = nus_send_tracked(conn, buffer, bytes_written + 1);
+		err = nus_send_confirmed(conn, buffer, bytes_written + 1);
 		if (err) {
 			printk("Failed to send NUS self reports (err %d)\n", err);
+			self_report_export_abort();
 			return err;
 		}
 
-		self_report_drop_bytes(bytes_written);
+		err = self_report_export_commit();
+		if (err) {
+			printk("Failed to commit sent self reports (err %d)\n", err);
+			return err;
+		}
 		reports_sent += bytes_written / SELF_REPORT_ENTRY_SIZE;
 	} while (bytes_written > 0);
 
@@ -368,6 +477,9 @@ static int send_self_reports(struct bt_conn *conn)
 
 static void nus_received(struct bt_conn *conn, const uint8_t *const data, uint16_t len)
 {
+	bool already_active = false;
+	bool notifications_disabled = false;
+
 	nus_idle_timeout_refresh();
 
 	printk("NUS RX len=%u first=%02x %02x %02x %02x\n", len,
@@ -377,17 +489,26 @@ static void nus_received(struct bt_conn *conn, const uint8_t *const data, uint16
 	       len > 3 ? data[3] : 0);
 
 	if (len == 2 && memcmp(data, "st", 2) == 0) {
+		k_mutex_lock(&nus_state_lock, K_FOREVER);
 		if (transfer_active) {
+			already_active = true;
+		} else if (!nus_notifications_enabled || current_conn != conn) {
+			notifications_disabled = true;
+		} else {
+			transfer_active = true;
+			transfer_conn = bt_conn_ref(conn);
+		}
+		k_mutex_unlock(&nus_state_lock);
+
+		if (already_active) {
 			printk("NUS transfer already active, ignoring start command\n");
 			return;
 		}
-		if (!nus_notifications_enabled) {
+		if (notifications_disabled) {
 			printk("NUS transfer requested before notifications are enabled\n");
 			return;
 		}
 
-		transfer_active = true;
-		transfer_conn = bt_conn_ref(conn);
 		k_work_submit_to_queue(&transfer_work_q, &transfer_work);
 	}
 }
@@ -399,74 +520,84 @@ static void transfer_work_handler(struct k_work *work)
 
 	ARG_UNUSED(work);
 
+	k_mutex_lock(&nus_state_lock, K_FOREVER);
 	conn = transfer_conn;
 	transfer_conn = NULL;
+	k_mutex_unlock(&nus_state_lock);
 	if (!conn) {
-		transfer_active = false;
+		transfer_finish();
 		return;
 	}
 
 	printk("Starting sending data\n");
 	err = send_uptime(conn);
 	if (err) {
-		transfer_active = false;
-		bt_conn_unref(conn);
-		return;
+		goto transfer_failed;
 	}
 	printk("Sent time\n");
 
 	err = send_uptime_contacts_voltage(conn);
 	if (err) {
-		transfer_active = false;
-		bt_conn_unref(conn);
-		return;
+		goto transfer_failed;
 	}
 
 	err = send_self_reports(conn);
 	if (err) {
-		transfer_active = false;
-		bt_conn_unref(conn);
-		return;
+		goto transfer_failed;
 	}
 	
 	printk("Starting sending data\n");
 	err = send_networkdata(conn);
 	if (err) {
-		transfer_active = false;
-		bt_conn_unref(conn);
-		return;
+		goto transfer_failed;
 	}
 
 	err = send_finished(conn);
 	if (err) {
 		printk("Failed to send NUS finished response (err %d)\n", err);
-		transfer_active = false;
+		goto transfer_failed;
 	} else {
-		disconnect_when_sent = true;
-		printk("Sent finished message");
+		atomic_set(&disconnect_when_sent, 1);
+		disconnect_if_drained(conn);
+		printk("Sent finished message\n");
 	}
 
+	transfer_finish();
+	bt_conn_unref(conn);
+	return;
+
+transfer_failed:
+	printk("NUS transfer failed (err %d), disconnecting\n", err);
+	transfer_finish();
+	if (nus_connection_ready(conn)) {
+		disconnect_nus_connection(conn);
+	}
 	bt_conn_unref(conn);
 }
 
 static void nus_sent(struct bt_conn *conn)
 {
+	if (!nus_connection_ready(conn)) {
+		return;
+	}
+
 	nus_idle_timeout_refresh();
 
-	if (atomic_get(&pending_nus_sends) > 0) {
-		atomic_dec(&pending_nus_sends);
+	if (atomic_cas(&pending_nus_sends, 1, 0)) {
+		k_sem_give(&nus_sent_sem);
 	}
 
-	if (disconnect_when_sent && atomic_get(&pending_nus_sends) == 0) {
-		disconnect_when_sent = false;
-		disconnect_nus_connection(conn);
-	}
+	disconnect_if_drained(conn);
 }
 
 static void nus_send_enabled(enum bt_nus_send_status status)
 {
-	nus_notifications_enabled = (status == BT_NUS_SEND_STATUS_ENABLED);
-	printk("NUS TX notifications %s\n", nus_notifications_enabled ? "enabled" : "disabled");
+	bool enabled = status == BT_NUS_SEND_STATUS_ENABLED;
+
+	k_mutex_lock(&nus_state_lock, K_FOREVER);
+	nus_notifications_enabled = enabled;
+	k_mutex_unlock(&nus_state_lock);
+	printk("NUS TX notifications %s\n", enabled ? "enabled" : "disabled");
 }
 
 static struct bt_nus_cb nus_cb = {
@@ -477,6 +608,7 @@ static struct bt_nus_cb nus_cb = {
 
 static void connected(struct bt_conn *conn, uint8_t err)
 {
+	struct bt_conn *old_conn;
 	char addr[BT_ADDR_LE_STR_LEN];
 
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
@@ -490,37 +622,54 @@ static void connected(struct bt_conn *conn, uint8_t err)
 	printk("Connected: %s\n", addr);
 	print_conn_info(conn, "Initial connection parameters");
 
-	if (current_conn) {
+	k_mutex_lock(&nus_state_lock, K_FOREVER);
+	old_conn = current_conn;
+	current_conn = bt_conn_ref(conn);
+	nus_notifications_enabled = false;
+	k_mutex_unlock(&nus_state_lock);
+
+	if (old_conn) {
 		printk("Replacing previous connection reference\n");
-		bt_conn_unref(current_conn);
+		bt_conn_unref(old_conn);
 	}
 
-	current_conn = bt_conn_ref(conn);
 	nus_idle_timeout_refresh();
 	request_connection_params(conn);
 }
 
 static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
+	struct bt_conn *current_ref = NULL;
+	struct bt_conn *queued_transfer_ref = NULL;
 	char addr[BT_ADDR_LE_STR_LEN];
 
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 	printk("Disconnected: %s (reason 0x%02x)\n", addr, reason);
 
+	k_mutex_lock(&nus_state_lock, K_FOREVER);
 	if (current_conn == conn) {
-		bt_conn_unref(current_conn);
+		current_ref = current_conn;
 		current_conn = NULL;
 	}
 
 	nus_notifications_enabled = false;
-	disconnect_when_sent = false;
-	transfer_active = false;
-	nus_idle_timeout_cancel();
 	if (transfer_conn) {
-		bt_conn_unref(transfer_conn);
+		queued_transfer_ref = transfer_conn;
 		transfer_conn = NULL;
+		transfer_active = false;
+	}
+	k_mutex_unlock(&nus_state_lock);
+
+	atomic_set(&disconnect_when_sent, 0);
+	nus_idle_timeout_cancel();
+	if (current_ref) {
+		bt_conn_unref(current_ref);
+	}
+	if (queued_transfer_ref) {
+		bt_conn_unref(queued_transfer_ref);
 	}
 	atomic_set(&pending_nus_sends, 0);
+	k_sem_give(&nus_sent_sem);
 }
 
 static void le_param_updated(struct bt_conn *conn, uint16_t interval,
@@ -561,6 +710,9 @@ int nus_service_init(void)
 {
 	int err;
 
+	atomic_set(&pending_nus_sends, 0);
+	atomic_set(&disconnect_when_sent, 0);
+
 	err = bt_nus_init(&nus_cb);
 	if (err) {
 		printk("Failed to initialize NUS (err %d)\n", err);
@@ -576,5 +728,10 @@ int nus_service_init(void)
 
 bool nus_is_connected(void)
 {
-	return current_conn != NULL;
+	bool connected;
+
+	k_mutex_lock(&nus_state_lock, K_FOREVER);
+	connected = current_conn != NULL;
+	k_mutex_unlock(&nus_state_lock);
+	return connected;
 }

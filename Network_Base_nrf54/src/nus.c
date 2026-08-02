@@ -24,7 +24,7 @@ LOG_MODULE_DECLARE(network_base);
 #define DSA_SELF_REPORT_SET_LEN 3
 #define DSA_VOLTAGE_LEN 2
 #define DSA_CONTROL_LEN 8
-#define DSA_TIME_CONTACT_VOLTAGE_LEN 8
+#define DSA_TIME_CONTACT_VOLTAGE_LEN 9
 #define NUS_RX_IDLE_TIMEOUT K_SECONDS(10)
 
 static struct bt_nus_client nus_client;
@@ -112,8 +112,8 @@ static void handle_time_package(const uint8_t *data)
 static void handle_time_contact_voltage_package(const uint8_t *data)
 {
 	uint32_t timer = uint32_be_decode(data);
-	uint16_t contact_count = uint16_be_decode(&data[4]);
-	uint16_t voltage = uint16_be_decode(&data[6]);
+	uint32_t contact_count = uint24_be_decode(&data[4]);
+	uint16_t voltage = uint16_be_decode(&data[7]);
 	printk("ID:%u Current Timer:%u\n", current_beacon_id, timer);
 	printk("ID:%u Contact Count:%u\n", current_beacon_id, contact_count);
 	printk("ID:%u Voltage:%u (not implemented yet)\n", current_beacon_id, voltage);

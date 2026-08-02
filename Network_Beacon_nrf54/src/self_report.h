@@ -5,10 +5,11 @@
 
 #define SELF_REPORT_ENTRY_SIZE 3U
 
-void self_report_init(void);
-uint16_t self_report_peek(uint16_t entry_offset, uint8_t *buffer,
-			  uint16_t buffer_len);
-void self_report_drop_bytes(uint16_t bytes_to_drop);
-uint16_t self_report_get_count(void);
+int self_report_init(void);
+int self_report_export_begin(uint8_t *buffer, uint16_t buffer_len,
+			     uint16_t *bytes_written);
+int self_report_export_commit(void);
+void self_report_export_abort(void);
+int self_report_get_count(uint16_t *count);
 
 #endif /* SELF_REPORT_H */
