@@ -38,7 +38,7 @@ endmenu
 
 menu "DSA network buffering"
 
-config DSA_NETWORK_CONTACT_RING_COUNT
+config DSA_NETWORK_RING_COUNT
 	int "Contact entries held in RAM"
 	default 24000
 	range 1 65535
@@ -57,12 +57,12 @@ config DSA_NETWORK_STATUS_UPDATE_DELAY_MS
 	default 300
 	range 0 60000
 
-config DSA_NETWORK_RAM_FLUSH_THRESHOLD
+config DSA_NETWORK_FLUSH_THRESHOLD
 	int "RAM contact count that starts flash flushing"
 	default 23000
 	range 1 65535
 
-config DSA_NETWORK_STORAGE_TOTAL_BYTES
+config DSA_NETWORK_FLASH_SIZE_BYTES
 	hex "Contact flash partition size in bytes"
 	default 0xc5000
 
@@ -134,16 +134,23 @@ config DSA_SELF_REPORT_LONG_PRESS_MS
 
 config DSA_SELF_REPORT_RING_COUNT
 	int "Self-report entries held in RAM"
-	default 100
+	default 256
 	range 1 65535
 
 config DSA_SELF_REPORT_FLUSH_THRESHOLD
 	int "Self-report RAM flush threshold"
 	default 75
-	range 2 100
+	range 2 65535
 	help
 	  Start moving the oldest reports to flash when this many reports
 	  are buffered in RAM.
+
+config DSA_SELF_REPORT_FLASH_SIZE_BYTES
+	hex "Self-report flash partition size in bytes"
+	default 0x2000
+	help
+	  Size of the fixed flash partition reserved for self reports. The
+	  partition must contain at least two complete flash sectors.
 
 config DSA_SELF_REPORT_FLUSH_BATCH
 	int "Reports written per flash block"

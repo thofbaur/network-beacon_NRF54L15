@@ -23,16 +23,22 @@
 	FIXED_PARTITION_SIZE(SELF_REPORT_STORAGE_PARTITION)
 
 #define SELF_REPORT_STORAGE_SECTOR_SIZE 4096U
-#define SELF_REPORT_STORAGE_TOTAL_SIZE 0x2000U
+#define SELF_REPORT_STORAGE_TOTAL_SIZE CONFIG_DSA_SELF_REPORT_FLASH_SIZE_BYTES
+#define SELF_REPORT_STORAGE_RESERVED_SECTORS 1U
+#define SELF_REPORT_STORAGE_BLOCKS_PER_SECTOR 4U
 #define SELF_REPORT_STORAGE_META_ID 1U
 #define SELF_REPORT_STORAGE_BLOCK_ID_BASE 0x100U
-#define SELF_REPORT_STORAGE_BLOCK_COUNT 16U
+#define SELF_REPORT_STORAGE_BLOCK_COUNT \
+	(((SELF_REPORT_STORAGE_TOTAL_SIZE / SELF_REPORT_STORAGE_SECTOR_SIZE) - \
+	  SELF_REPORT_STORAGE_RESERVED_SECTORS) * \
+	 SELF_REPORT_STORAGE_BLOCKS_PER_SECTOR)
 #define SELF_REPORT_STORAGE_MAGIC 0x44534152U
-#define SELF_REPORT_STORAGE_VERSION 1U
+#define SELF_REPORT_STORAGE_VERSION 3U
 
 struct self_report_storage_meta {
 	uint32_t magic;
 	uint16_t version;
+	uint32_t partition_size;
 	uint16_t pending_blocks;
 	uint32_t pending_reports;
 	uint32_t oldest_seq;
@@ -54,6 +60,11 @@ BUILD_ASSERT(SELF_REPORT_STORAGE_SIZE == SELF_REPORT_STORAGE_TOTAL_SIZE,
 BUILD_ASSERT((SELF_REPORT_STORAGE_TOTAL_SIZE %
 	      SELF_REPORT_STORAGE_SECTOR_SIZE) == 0,
 	     "Self-report NVS partition must contain whole sectors");
+BUILD_ASSERT(SELF_REPORT_STORAGE_TOTAL_SIZE >=
+	     (2U * SELF_REPORT_STORAGE_SECTOR_SIZE),
+	     "Self-report NVS partition must contain at least two sectors");
+BUILD_ASSERT(SELF_REPORT_STORAGE_BLOCK_COUNT > 0,
+	     "Self-report flash must contain at least one flush batch");
 
 static struct nvs_fs report_fs;
 static struct self_report_storage_meta meta;
@@ -71,6 +82,7 @@ static void reset_meta(void)
 {
 	meta.magic = SELF_REPORT_STORAGE_MAGIC;
 	meta.version = SELF_REPORT_STORAGE_VERSION;
+	meta.partition_size = SELF_REPORT_STORAGE_TOTAL_SIZE;
 	meta.pending_blocks = 0;
 	meta.pending_reports = 0;
 	meta.oldest_seq = 0;
@@ -290,13 +302,14 @@ int self_report_storage_init(void)
 		err = (int)read;
 	} else if (read != sizeof(meta) ||
 		   meta.magic != SELF_REPORT_STORAGE_MAGIC ||
-		   meta.version != SELF_REPORT_STORAGE_VERSION) {
-		printk("Incompatible self-report NVM format; clearing stored reports\n");
+		   meta.version != SELF_REPORT_STORAGE_VERSION ||
+		   meta.partition_size != SELF_REPORT_STORAGE_TOTAL_SIZE) {
+		printk("Incompatible self-report NVM format or capacity; clearing stored reports\n");
 		err = reset_storage();
 	} else if (meta.pending_blocks > SELF_REPORT_STORAGE_BLOCK_COUNT ||
 		   meta.pending_reports >
 			   ((uint32_t)meta.pending_blocks *
-			    SELF_REPORT_STORAGE_BLOCK_ENTRIES) ||
+			    CONFIG_DSA_SELF_REPORT_FLUSH_BATCH) ||
 		   meta.oldest_offset >= SELF_REPORT_STORAGE_BLOCK_ENTRIES ||
 		   (meta.pending_blocks == 0 &&
 		    (meta.pending_reports != 0 || meta.oldest_offset != 0))) {
@@ -372,8 +385,8 @@ int self_report_storage_append(const uint8_t *reports, uint16_t report_count)
 	ssize_t written;
 	int err;
 
-	if (!reports || report_count == 0 ||
-	    report_count > SELF_REPORT_STORAGE_BLOCK_ENTRIES) {
+	if (!reports ||
+	    report_count != CONFIG_DSA_SELF_REPORT_FLUSH_BATCH) {
 		return -EINVAL;
 	}
 
