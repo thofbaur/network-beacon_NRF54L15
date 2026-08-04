@@ -27,8 +27,8 @@ target_sources(app PRIVATE
 	src/storage_work_queue.c
 )
 
-target_sources_ifdef(CONFIG_DSA_DEV_SYNTHETIC_CONTACTS app PRIVATE
-	src/network_dev.c
+target_sources_ifdef(CONFIG_DSA_DEV_VALIDATION app PRIVATE
+	src/development_validation.c
 )
 
 zephyr_library_include_directories(${ZEPHYR_BASE}/samples/bluetooth)

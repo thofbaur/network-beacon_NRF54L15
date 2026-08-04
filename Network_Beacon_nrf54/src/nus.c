@@ -236,7 +236,8 @@ static void request_connection_params(struct bt_conn *conn)
 	mtu_exchange_params.func = mtu_exchange_cb;
 	err = bt_gatt_exchange_mtu(conn, &mtu_exchange_params);
 	if (err) {
-		printk("MTU exchange request failed (err %d)\n", err);
+		printk("MTU exchange request failed (err %d). Current MTU %u\n",
+		       err, bt_gatt_get_mtu(conn));
 	} else {
 		printk("MTU exchange request sent\n");
 	}
@@ -347,8 +348,6 @@ static int send_networkdata(struct bt_conn *conn)
 		max_payload = 0;
 	}
 
-	printk("NUS max payload: %u bytes\n", max_payload);
-
 	payload_len = MIN(max_payload, (uint16_t)sizeof(buffer));
 	if (payload_len <= 1) {
 		return -EMSGSIZE;
@@ -408,6 +407,7 @@ static int send_networkdata(struct bt_conn *conn)
 static int send_self_reports(struct bt_conn *conn)
 {
 	int err;
+	int sync_err;
 	int64_t retry_deadline;
 	uint16_t max_payload = bt_gatt_get_mtu(conn);
 	uint16_t payload_len;
@@ -459,6 +459,11 @@ static int send_self_reports(struct bt_conn *conn)
 		if (err) {
 			printk("Failed to send NUS self reports (err %d)\n", err);
 			self_report_export_abort();
+			sync_err = self_report_sync_storage();
+			if (sync_err) {
+				printk("Failed to checkpoint self-report storage (err %d)\n",
+				       sync_err);
+			}
 			return err;
 		}
 
@@ -469,6 +474,13 @@ static int send_self_reports(struct bt_conn *conn)
 		}
 		reports_sent += bytes_written / SELF_REPORT_ENTRY_SIZE;
 	} while (bytes_written > 0);
+
+	sync_err = self_report_sync_storage();
+	if (sync_err) {
+		printk("Failed to checkpoint self-report storage (err %d)\n",
+		       sync_err);
+		return sync_err;
+	}
 
 	printk("Sent %u self report(s)\n", reports_sent);
 	return 0;
@@ -675,8 +687,6 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 static void le_param_updated(struct bt_conn *conn, uint16_t interval,
 			     uint16_t latency, uint16_t timeout)
 {
-	ARG_UNUSED(conn);
-
 	printk("Connection parameters updated: interval=%u units latency=%u timeout=%u units\n",
 	       interval, latency, timeout);
 }

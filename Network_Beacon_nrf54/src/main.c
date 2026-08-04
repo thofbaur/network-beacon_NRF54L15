@@ -19,6 +19,7 @@
 #include "led.h"
 #include "self_report.h"
 #include "battery_voltage.h"
+#include "development_validation.h"
 
 int main(void)
 {
@@ -59,7 +60,13 @@ int main(void)
 	}
 
 #if defined(CONFIG_DSA_DEV_SYNTHETIC_CONTACTS)
-	network_dev_fill_random_contacts(100);
+	development_validation_fill_random_contacts(
+		CONFIG_DSA_DEV_SYNTHETIC_CONTACT_COUNT);
+#endif
+
+#if defined(CONFIG_DSA_DEV_SYNTHETIC_SELF_REPORTS)
+	development_validation_fill_self_reports(
+		CONFIG_DSA_DEV_SYNTHETIC_SELF_REPORT_COUNT);
 #endif
 
 	k_sleep(K_FOREVER);

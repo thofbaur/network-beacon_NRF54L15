@@ -56,6 +56,8 @@ static bool self_report_led_ready;
 
 static void led_blink_handler(struct k_work *work);
 static void led_self_report_handler(struct k_work *work);
+static bool led_params_equal(const struct led_params *a,
+			     const struct led_params *b);
 
 static K_WORK_DELAYABLE_DEFINE(led_blink_work, led_blink_handler);
 static K_WORK_DELAYABLE_DEFINE(led_self_report_work,
@@ -65,6 +67,13 @@ static void led_params_reset(void)
 {
 	params_led.led_active = IS_ENABLED(CONFIG_DSA_DEFAULT_LED_ACTIVE);
 	params_led.interval_s = CONFIG_DSA_LED_BLINK_INTERVAL_MS / 1000;
+}
+
+static bool led_params_equal(const struct led_params *a,
+			     const struct led_params *b)
+{
+	return a->led_active == b->led_active &&
+	       a->interval_s == b->interval_s;
 }
 
 static int led_set(bool on)
@@ -243,8 +252,7 @@ void led_command_commit(void)
 	}
 	command_batch_active = false;
 
-	if (memcmp(&command_old_params_led, &params_led,
-		   sizeof(params_led)) != 0) {
+	if (!led_params_equal(&command_old_params_led, &params_led)) {
 		int err = led_params_save();
 
 		if (params_led.led_active) {

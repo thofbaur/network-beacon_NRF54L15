@@ -34,11 +34,8 @@ uint8_t get_device_id()
     // Retrieve all addresses registered for the Bluetooth stack
     bt_id_get(addrs, &count);
 
-    if (count > 0) {
+	if (count > 0) {
 		device_id = lookup_device_id(&addrs[0]);
-
-        char addr_str[BT_ADDR_LE_STR_LEN];
-        bt_addr_le_to_str(&addrs[0], addr_str, sizeof(addr_str));
 	} else {
 		printk("No Bluetooth identity address available, using unknown device id\n");
 	}

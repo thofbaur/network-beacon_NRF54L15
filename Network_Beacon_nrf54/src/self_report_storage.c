@@ -70,6 +70,7 @@ static struct nvs_fs report_fs;
 static struct self_report_storage_meta meta;
 static struct self_report_storage_block block_cache;
 static bool initialized;
+static bool meta_dirty;
 static K_MUTEX_DEFINE(storage_lock);
 
 static uint16_t block_id(uint32_t sequence)
@@ -105,6 +106,7 @@ static int save_meta(void)
 	}
 
 	device_set_storage_fault(STORAGE_FAULT_SELF_REPORT_META, false);
+	meta_dirty = false;
 	return 0;
 }
 
@@ -381,6 +383,7 @@ static int discard_oldest_block(void)
 int self_report_storage_append(const uint8_t *reports, uint16_t report_count)
 {
 	struct self_report_storage_meta previous_meta;
+	bool previous_meta_dirty;
 	uint32_t sequence;
 	ssize_t written;
 	int err;
@@ -405,6 +408,7 @@ int self_report_storage_append(const uint8_t *reports, uint16_t report_count)
 	}
 
 	previous_meta = meta;
+	previous_meta_dirty = meta_dirty;
 	sequence = meta.next_seq;
 	memset(&block_cache, 0, sizeof(block_cache));
 	block_cache.magic = SELF_REPORT_STORAGE_MAGIC;
@@ -436,6 +440,7 @@ int self_report_storage_append(const uint8_t *reports, uint16_t report_count)
 	err = save_meta();
 	if (err) {
 		meta = previous_meta;
+		meta_dirty = previous_meta_dirty;
 	}
 out:
 	device_set_storage_fault(STORAGE_FAULT_SELF_REPORT_WRITE, err != 0);
@@ -490,6 +495,7 @@ int self_report_storage_peek(uint8_t *buffer, uint16_t buffer_len,
 int self_report_storage_drop(uint16_t report_count, bool *block_retired)
 {
 	struct self_report_storage_meta previous_meta;
+	bool previous_meta_dirty;
 	uint16_t remaining;
 	uint32_t retired_sequence;
 	int err;
@@ -525,6 +531,7 @@ int self_report_storage_drop(uint16_t report_count, bool *block_retired)
 	}
 
 	previous_meta = meta;
+	previous_meta_dirty = meta_dirty;
 	meta.pending_reports -= report_count;
 	if (report_count == remaining) {
 		retired_sequence = meta.oldest_seq;
@@ -534,16 +541,19 @@ int self_report_storage_drop(uint16_t report_count, bool *block_retired)
 		if (meta.pending_blocks == 0) {
 			meta.oldest_seq = meta.next_seq;
 		}
+		meta_dirty = true;
+
+		/* Commit the new queue head before deleting a retired block. */
+		err = save_meta();
+		if (err) {
+			meta = previous_meta;
+			meta_dirty = previous_meta_dirty;
+			goto out;
+		}
 	} else {
 		meta.oldest_offset += report_count;
 		retired_sequence = UINT32_MAX;
-	}
-
-	/* Persist the advanced read position before deleting a retired block. */
-	err = save_meta();
-	if (err) {
-		meta = previous_meta;
-		goto out;
+		meta_dirty = true;
 	}
 
 	if (retired_sequence != UINT32_MAX) {
@@ -562,6 +572,25 @@ int self_report_storage_drop(uint16_t report_count, bool *block_retired)
 		err = 0;
 	}
 out:
+	k_mutex_unlock(&storage_lock);
+	return err;
+}
+
+int self_report_storage_sync(void)
+{
+	int err;
+
+	err = self_report_storage_init();
+	if (err) {
+		return err;
+	}
+
+	k_mutex_lock(&storage_lock, K_FOREVER);
+	if (meta_dirty) {
+		err = save_meta();
+	} else {
+		err = 0;
+	}
 	k_mutex_unlock(&storage_lock);
 	return err;
 }

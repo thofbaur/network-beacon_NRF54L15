@@ -119,6 +119,8 @@ static bool adv_interval_valid(uint16_t interval);
 static bool scan_interval_valid(uint16_t interval);
 static int adv_ms_to_units(uint16_t milliseconds, uint16_t *units);
 static int scan_ms_to_units(uint16_t milliseconds, uint16_t *units);
+static bool radio_params_equal(const struct radio_params *a,
+			       const struct radio_params *b);
 
 K_MSGQ_DEFINE(command_msgq, sizeof(struct command_msg), COMMAND_QUEUE_DEPTH, 1);
 static K_WORK_DEFINE(command_work, command_work_handler);
@@ -267,8 +269,7 @@ void radio_command_commit(void)
 	}
 	command_batch_active = false;
 
-	if (memcmp(&command_old_params_radio, &params_radio,
-		   sizeof(params_radio)) != 0) {
+	if (!radio_params_equal(&command_old_params_radio, &params_radio)) {
 		err = radio_params_validate(&params_radio);
 		if (err) {
 			printk("Rejecting invalid radio parameters (err %d)\n", err);
@@ -556,6 +557,22 @@ static int radio_params_validate(const struct radio_params *params)
 	}
 
 	return 0;
+}
+
+static bool radio_params_equal(const struct radio_params *a,
+			       const struct radio_params *b)
+{
+	return a->adv_interval_min == b->adv_interval_min &&
+	       a->adv_interval_max == b->adv_interval_max &&
+	       a->adv_interval_min_lowactivity ==
+		       b->adv_interval_min_lowactivity &&
+	       a->adv_interval_max_lowactivity ==
+		       b->adv_interval_max_lowactivity &&
+	       a->scan_interval == b->scan_interval &&
+	       a->scan_interval_lowactivity == b->scan_interval_lowactivity &&
+	       a->scan_window == b->scan_window &&
+	       a->scan_window_lowactivity == b->scan_window_lowactivity &&
+	       a->mode == b->mode;
 }
 
 static bool adv_interval_valid(uint16_t interval)

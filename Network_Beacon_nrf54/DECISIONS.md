@@ -44,3 +44,11 @@ an unsigned three-byte big-endian value. The packet layout is flag (1 byte),
 uptime (4 bytes), contact count (3 bytes), and battery voltage (2 bytes).
 Internal contact counting remains 32-bit; values above `0x00ffffff` saturate
 on the wire.
+
+## 2026-08-03: Export Drop Checkpoints Minimize Flash Writes
+
+Contact and self-report exports defer metadata checkpoints for partial flash
+block drops and sync once after the export loop. A reset before that sync can
+therefore resend already acknowledged entries. This is intentional to reduce
+flash writes; full-block retirement still persists the new queue head before
+deleting the retired block.

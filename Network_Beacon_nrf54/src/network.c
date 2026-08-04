@@ -63,6 +63,8 @@ static K_MUTEX_DEFINE(contact_lock);
 
 static void network_status_update_handler(struct k_work *work);
 static void network_flush_handler(struct k_work *work);
+static bool network_params_equal(const struct network_params *a,
+				 const struct network_params *b);
 static uint8_t contact_status_from_count(uint16_t number_dataset);
 
 static K_WORK_DELAYABLE_DEFINE(network_status_update_work,
@@ -171,8 +173,7 @@ void network_command_commit(void)
 	}
 	command_batch_active = false;
 
-	if (memcmp(&command_old_params_network, &params_network,
-		   sizeof(params_network)) != 0) {
+	if (!network_params_equal(&command_old_params_network, &params_network)) {
 		int err = network_params_save();
 
 		if (err) {
@@ -250,6 +251,13 @@ int network_params_save(void)
 
 	device_set_storage_fault(STORAGE_FAULT_NETWORK_PARAMS, err != 0);
 	return err;
+}
+
+static bool network_params_equal(const struct network_params *a,
+				 const struct network_params *b)
+{
+	return a->rssi_threshold == b->rssi_threshold &&
+	       a->tracking_active == b->tracking_active;
 }
 
 static uint8_t contact_status_from_count(uint16_t number_dataset)
@@ -374,6 +382,8 @@ static void network_flush_handler(struct k_work *work)
 	idx_read = (idx_read + contact_flush_entries) %
 		   CONFIG_DSA_NETWORK_RING_COUNT;
 	contact_count -= contact_flush_entries;
+	printk("Flushed %u contact(s) from RAM to flash, %u remain in RAM\n",
+	       contact_flush_entries, contact_count);
 	contact_flush_active = false;
 	contact_flush_entries = 0;
 
@@ -445,7 +455,9 @@ void network_evaluate_contact(uint8_t id, int8_t rssi)
 }
 
 #if defined(CONFIG_DSA_DEV_SYNTHETIC_CONTACTS)
-void network_dev_append_contact(uint8_t id, uint32_t uptime_s, uint8_t rssi)
+void network_development_validation_append_contact(uint8_t id,
+						   uint32_t uptime_s,
+						   uint8_t rssi)
 {
 	if (!atomic_get(&tracking_active)) {
 		return;
@@ -506,42 +518,66 @@ int network_contact_export_begin(uint8_t *buffer, uint16_t buffer_len,
 		return -EBUSY;
 	}
 
+	contact_export_source = CONTACT_EXPORT_NVM;
+	contact_export_bytes = 0;
+	k_mutex_unlock(&contact_lock);
+
 	err = network_storage_get_contact_count(&nvm_contacts);
 	if (err) {
-		k_mutex_unlock(&contact_lock);
+		network_contact_export_abort();
 		return err;
 	}
 	if (nvm_contacts > 0) {
 		err = network_storage_peek(buffer, buffer_len, &written);
-		if (err) {
-			k_mutex_unlock(&contact_lock);
-			return err;
+		if (err || written == 0) {
+			network_contact_export_abort();
+			return err ? err : -EIO;
 		}
-		if (written == 0) {
+
+		k_mutex_lock(&contact_lock, K_FOREVER);
+		if (contact_export_source != CONTACT_EXPORT_NVM ||
+		    contact_export_bytes != 0) {
+			contact_export_source = CONTACT_EXPORT_NONE;
+			contact_export_bytes = 0;
 			k_mutex_unlock(&contact_lock);
+			network_schedule_flush_if_needed();
 			return -EIO;
 		}
-		contact_export_source = CONTACT_EXPORT_NVM;
-	} else {
-		read_index = idx_read;
-		entries_available = contact_count;
-
-		while (entries_available > 0 &&
-		       (buffer_len - written) >= CONTACT_ENTRY_SIZE) {
-			contact_entry_write(&buffer[written], &data_array[read_index]);
-			written += CONTACT_ENTRY_SIZE;
-
-			read_index = (read_index + 1) %
-				     CONFIG_DSA_NETWORK_RING_COUNT;
-			entries_available--;
-		}
-
-		if (written > 0) {
-			contact_export_source = CONTACT_EXPORT_RAM;
-		}
+		contact_export_bytes = written;
+		k_mutex_unlock(&contact_lock);
+		*bytes_written = written;
+		return 0;
 	}
 
-	contact_export_bytes = written;
+	k_mutex_lock(&contact_lock, K_FOREVER);
+	if (contact_export_source != CONTACT_EXPORT_NVM ||
+	    contact_export_bytes != 0) {
+		contact_export_source = CONTACT_EXPORT_NONE;
+		contact_export_bytes = 0;
+		k_mutex_unlock(&contact_lock);
+		network_schedule_flush_if_needed();
+		return -EIO;
+	}
+
+	read_index = idx_read;
+	entries_available = contact_count;
+
+	while (entries_available > 0 &&
+	       (buffer_len - written) >= CONTACT_ENTRY_SIZE) {
+		contact_entry_write(&buffer[written], &data_array[read_index]);
+		written += CONTACT_ENTRY_SIZE;
+
+		read_index = (read_index + 1) %
+			     CONFIG_DSA_NETWORK_RING_COUNT;
+		entries_available--;
+	}
+
+	if (written > 0) {
+		contact_export_source = CONTACT_EXPORT_RAM;
+		contact_export_bytes = written;
+	} else {
+		contact_export_source = CONTACT_EXPORT_NONE;
+	}
 	*bytes_written = written;
 	k_mutex_unlock(&contact_lock);
 

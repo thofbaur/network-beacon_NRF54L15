@@ -156,7 +156,8 @@ static void self_report_store(uint32_t uptime_s)
 {
 	k_mutex_lock(&report_lock, K_FOREVER);
 
-	if (report_count == CONFIG_DSA_SELF_REPORT_RING_COUNT) {
+	if (report_count == CONFIG_DSA_SELF_REPORT_RING_COUNT &&
+	    (export_active || flush_active)) {
 		k_mutex_unlock(&report_lock);
 		schedule_flush_if_needed();
 		printk("Self-report RAM full; dropping newest report while flushing\n");
@@ -311,6 +312,10 @@ int self_report_export_begin(uint8_t *buffer, uint16_t buffer_len,
 
 	*bytes_written = 0;
 	buffer_len -= buffer_len % SELF_REPORT_ENTRY_SIZE;
+	if (buffer_len == 0) {
+		return 0;
+	}
+
 	err = self_report_storage_init();
 	if (err) {
 		return err;
@@ -323,43 +328,70 @@ int self_report_export_begin(uint8_t *buffer, uint16_t buffer_len,
 		return -EBUSY;
 	}
 
+	export_active = true;
+	export_source = SELF_REPORT_EXPORT_FLASH;
+	export_entries = 0;
+	k_mutex_unlock(&report_lock);
+
 	err = self_report_storage_get_count(&flash_count);
 	if (err) {
-		k_mutex_unlock(&report_lock);
+		self_report_export_abort();
 		return err;
 	}
 	if (flash_count > 0) {
 		err = self_report_storage_peek(buffer, buffer_len, &written);
-		if (err) {
-			k_mutex_unlock(&report_lock);
-			return err;
+		if (err || written == 0) {
+			self_report_export_abort();
+			return err ? err : -EIO;
 		}
-		if (written == 0) {
+
+		k_mutex_lock(&report_lock, K_FOREVER);
+		if (!export_active ||
+		    export_source != SELF_REPORT_EXPORT_FLASH ||
+		    export_entries != 0) {
+			export_active = false;
+			export_entries = 0;
+			export_source = SELF_REPORT_EXPORT_NONE;
 			k_mutex_unlock(&report_lock);
+			schedule_flush_if_needed();
 			return -EIO;
 		}
-		export_source = SELF_REPORT_EXPORT_FLASH;
-	} else {
-		entries_available = report_count;
-		index = read_index;
-
-		while (entries_available > 0 &&
-		       (buffer_len - written) >= SELF_REPORT_ENTRY_SIZE) {
-			memcpy(&buffer[written], reports[index].uptime_s,
-			       SELF_REPORT_ENTRY_SIZE);
-			written += SELF_REPORT_ENTRY_SIZE;
-			index = (index + 1) %
-				CONFIG_DSA_SELF_REPORT_RING_COUNT;
-			entries_available--;
-		}
-		if (written > 0) {
-			export_source = SELF_REPORT_EXPORT_RAM;
-		}
+		export_entries = written / SELF_REPORT_ENTRY_SIZE;
+		k_mutex_unlock(&report_lock);
+		*bytes_written = written;
+		return 0;
 	}
 
+	k_mutex_lock(&report_lock, K_FOREVER);
+	if (!export_active ||
+	    export_source != SELF_REPORT_EXPORT_FLASH ||
+	    export_entries != 0) {
+		export_active = false;
+		export_entries = 0;
+		export_source = SELF_REPORT_EXPORT_NONE;
+		k_mutex_unlock(&report_lock);
+		schedule_flush_if_needed();
+		return -EIO;
+	}
+
+	entries_available = report_count;
+	index = read_index;
+
+	while (entries_available > 0 &&
+	       (buffer_len - written) >= SELF_REPORT_ENTRY_SIZE) {
+		memcpy(&buffer[written], reports[index].uptime_s,
+		       SELF_REPORT_ENTRY_SIZE);
+		written += SELF_REPORT_ENTRY_SIZE;
+		index = (index + 1) %
+			CONFIG_DSA_SELF_REPORT_RING_COUNT;
+		entries_available--;
+	}
 	if (written > 0) {
-		export_active = true;
+		export_source = SELF_REPORT_EXPORT_RAM;
 		export_entries = written / SELF_REPORT_ENTRY_SIZE;
+	} else {
+		export_active = false;
+		export_source = SELF_REPORT_EXPORT_NONE;
 	}
 	*bytes_written = written;
 	k_mutex_unlock(&report_lock);
@@ -415,6 +447,11 @@ out:
 	return err;
 }
 
+int self_report_sync_storage(void)
+{
+	return self_report_storage_sync();
+}
+
 void self_report_export_abort(void)
 {
 	k_mutex_lock(&report_lock, K_FOREVER);
@@ -447,3 +484,10 @@ int self_report_get_count(uint16_t *count)
 	*count = (uint16_t)MIN(total, UINT16_MAX);
 	return 0;
 }
+
+#if defined(CONFIG_DSA_DEV_SYNTHETIC_SELF_REPORTS)
+void self_report_development_validation_append(uint32_t uptime_s)
+{
+	self_report_store(uptime_s);
+}
+#endif

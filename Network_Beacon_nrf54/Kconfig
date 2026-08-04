@@ -4,12 +4,42 @@ source "Kconfig.zephyr"
 
 menu "DSA development options"
 
+config DSA_DEV_VALIDATION
+	bool
+	default y if DSA_DEV_SYNTHETIC_CONTACTS
+	default y if DSA_DEV_SYNTHETIC_SELF_REPORTS
+
 config DSA_DEV_SYNTHETIC_CONTACTS
 	bool "Insert synthetic contacts at startup"
 	default n
 	help
-	  Build the development contact generator and insert 100 synthetic
-	  contacts at startup. Keep this disabled for production firmware.
+	  Build the development contact generator and insert synthetic contacts
+	  at startup. Keep this disabled for production firmware.
+
+config DSA_DEV_SYNTHETIC_CONTACT_COUNT
+	int "Synthetic contacts inserted at startup"
+	default 100
+	range 0 65535
+	help
+	  Number of synthetic contacts inserted at startup when development
+	  contact generation is enabled. Ignored when synthetic contacts are
+	  disabled.
+
+config DSA_DEV_SYNTHETIC_SELF_REPORTS
+	bool "Insert synthetic self reports at startup"
+	default n
+	help
+	  Build the development self-report generator and insert synthetic
+	  self reports at startup. Keep this disabled for production firmware.
+
+config DSA_DEV_SYNTHETIC_SELF_REPORT_COUNT
+	int "Synthetic self reports inserted at startup"
+	default 0
+	range 0 65535
+	help
+	  Number of synthetic self reports inserted at startup when development
+	  self-report generation is enabled. Ignored when synthetic self reports
+	  are disabled.
 
 endmenu
 

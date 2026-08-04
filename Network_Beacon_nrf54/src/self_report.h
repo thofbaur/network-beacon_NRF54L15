@@ -10,6 +10,10 @@ int self_report_export_begin(uint8_t *buffer, uint16_t buffer_len,
 			     uint16_t *bytes_written);
 int self_report_export_commit(void);
 void self_report_export_abort(void);
+int self_report_sync_storage(void);
 int self_report_get_count(uint16_t *count);
+#if defined(CONFIG_DSA_DEV_SYNTHETIC_SELF_REPORTS)
+void self_report_development_validation_append(uint32_t uptime_s);
+#endif
 
 #endif /* SELF_REPORT_H */

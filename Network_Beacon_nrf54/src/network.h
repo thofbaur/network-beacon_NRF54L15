@@ -16,8 +16,9 @@ int network_contact_export_commit(void);
 void network_contact_export_abort(void);
 int network_sync_contact_storage(void);
 #if defined(CONFIG_DSA_DEV_SYNTHETIC_CONTACTS)
-void network_dev_append_contact(uint8_t id, uint32_t uptime_s, uint8_t rssi);
-void network_dev_fill_random_contacts(uint16_t count);
+void network_development_validation_append_contact(uint8_t id,
+						   uint32_t uptime_s,
+						   uint8_t rssi);
 #endif
 int network_get_contact_count(uint32_t *count);
 
