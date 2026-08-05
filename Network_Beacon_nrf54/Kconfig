@@ -98,6 +98,18 @@ config DSA_NETWORK_FLASH_SIZE_BYTES
 
 endmenu
 
+menu "DSA battery monitoring"
+
+config DSA_BATTERY_MEASURE_INTERVAL_MS
+	int "Battery voltage measurement interval in milliseconds"
+	default 14400000
+	range 1000 86400000
+	help
+	  Delay between periodic battery voltage measurements. The default is
+	  four hours.
+
+endmenu
+
 menu "DSA radio timing"
 
 config DSA_ADV_INTERVAL_MIN_MS

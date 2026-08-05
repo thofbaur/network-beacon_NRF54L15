@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#define NETWORK_CONTACT_ENTRY_SIZE 5U
+
 void network_evaluate_contact(uint8_t id, int8_t rssi);
 int network_init(void);
 void network_command_begin(void);

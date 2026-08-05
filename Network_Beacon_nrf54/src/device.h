@@ -44,3 +44,4 @@ uint32_t device_get_storage_faults(void);
 
 uint8_t device_get_network_status(void);
 void device_set_network_status(uint8_t status);
+void device_set_network_status_bits(uint8_t mask, uint8_t status);

@@ -6,6 +6,32 @@
 
 source "Kconfig.zephyr"
 
+config DSA_OUTPUT
+	string "DSA output backend"
+	default "UART"
+	help
+	  Select the output backend for DSA messages.
+	  Supported values are UART and RTT.
+
+choice DSA_OUTPUT_FORMAT
+	prompt "DSA output data format"
+	default DSA_OUTPUT_FORMAT_PARSED
+	help
+	  Select how received NUS packages are sent to the output backend.
+
+config DSA_OUTPUT_FORMAT_PARSED
+	bool "parsed"
+	help
+	  Parse known NUS packages and output readable text messages.
+
+config DSA_OUTPUT_FORMAT_RAW
+	bool "raw"
+	help
+	  Output each NUS package as raw bytes prepended with "ID" and the
+	  current beacon ID as one byte.
+
+endchoice
+
 config SETTINGS
 	default y
 

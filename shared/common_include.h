@@ -34,8 +34,15 @@
 #define DATA_LEVEL_6	64
 #define DATA_LEVEL_7	256
 
-#define DATA_LEVEL_MASK		0xE0
-#define P_SHIFT_STATUS_DATA	5
+#define DATA_LEVEL_MASK		0x0F
+#define P_SHIFT_STATUS_DATA	0
+
+#define BATTERY_LEVEL_MASK	0xF0
+#define P_SHIFT_STATUS_BATTERY	4
+
+#define BATTERY_LEVEL_1_THRESHOLD_MV	3000
+#define BATTERY_LEVEL_2_THRESHOLD_MV	2800
+#define BATTERY_LEVEL_3_THRESHOLD_MV	2600
 
 /* Runtime command parameter encoding. */
 #define P_NULL				0

@@ -52,3 +52,16 @@ block drops and sync once after the export loop. A reset before that sync can
 therefore resend already acknowledged entries. This is intentional to reduce
 flash writes; full-block retirement still persists the new queue head before
 deleting the retired block.
+
+## 2026-08-04: Contact Data Packets Carry Per-Packet Count
+
+Each `DSA_NUS_FLAG_DATA` packet now carries a one-byte contact count directly
+after the flag byte, followed by that many five-byte contact records. The count
+is per packet, not the total remaining contact count.
+
+## 2026-08-05: Battery Status Shares Network Status Byte
+
+Battery voltage is sampled periodically and cached. NUS status responses report
+the cached voltage instead of reading ADC during transfer. The advertised
+network status byte keeps contact data level in bits 3..0 and carries battery
+status in bits 7..4.

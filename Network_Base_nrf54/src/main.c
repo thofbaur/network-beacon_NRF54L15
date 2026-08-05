@@ -5,6 +5,7 @@
 
 #include "led.h"
 #include "nus.h"
+#include "output.h"
 #include "radio.h"
 
 LOG_MODULE_REGISTER(network_base, LOG_LEVEL_INF);
@@ -55,6 +56,12 @@ int main(void)
 	err = dk_buttons_init(button_handler);
 	if (err) {
 		LOG_ERR("Button init failed (err %d)", err);
+		return 0;
+	}
+
+	err = output_init();
+	if (err) {
+		LOG_ERR("Output init failed (err %d)", err);
 		return 0;
 	}
 

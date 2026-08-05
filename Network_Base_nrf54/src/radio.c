@@ -8,10 +8,10 @@
 #include <zephyr/bluetooth/gap.h>
 #include <zephyr/bluetooth/gatt.h>
 #include <zephyr/bluetooth/hci.h>
+#include <zephyr/sys/util.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/settings/settings.h>
-#include <zephyr/sys/printk.h>
 
 #include "common_include.h"
 #include "led.h"
@@ -20,6 +20,12 @@ LOG_MODULE_DECLARE(network_base);
 
 #define DSA_ADV_NAME "DSA"
 #define DSA_MANUFACTURER_PAYLOAD_LEN 3
+#define DSA_ATT_PAYLOAD_OVERHEAD 3U
+#define DSA_CONN_INTERVAL_MIN 6U
+#define DSA_CONN_INTERVAL_MAX 12U
+#define DSA_CONN_LATENCY 0U
+#define DSA_CONN_TIMEOUT 400U
+#define DSA_FINISH_DISCONNECT_DELAY K_MSEC(50)
 
 struct dsa_adv {
 	bool name_match;
@@ -35,8 +41,134 @@ static bool scanning_requested;
 static bool stop_after_finished_requested;
 static bool connect_in_progress;
 static bool nus_ready_notified;
+static bool transfer_finish_pending;
 static uint8_t pending_beacon_id;
 static uint8_t connected_beacon_id;
+static const struct bt_le_conn_param dsa_conn_param =
+	BT_LE_CONN_PARAM_INIT(DSA_CONN_INTERVAL_MIN, DSA_CONN_INTERVAL_MAX,
+			      DSA_CONN_LATENCY, DSA_CONN_TIMEOUT);
+static struct k_work_delayable finish_disconnect_work;
+
+static const char *phy_to_str(uint8_t phy)
+{
+	switch (phy) {
+	case BT_GAP_LE_PHY_1M:
+		return "1M";
+	case BT_GAP_LE_PHY_2M:
+		return "2M";
+	case BT_GAP_LE_PHY_CODED:
+		return "coded";
+	default:
+		return "unknown";
+	}
+}
+
+static void log_conn_throughput_state(struct bt_conn *conn, const char *stage)
+{
+	struct bt_conn_info info;
+	uint16_t att_mtu;
+	uint16_t att_payload;
+	int err;
+
+	err = bt_conn_get_info(conn, &info);
+	if (err) {
+		LOG_WRN("%s: failed to read connection info (err %d)", stage, err);
+		return;
+	}
+
+	att_mtu = bt_gatt_get_mtu(conn);
+	att_payload = att_mtu > DSA_ATT_PAYLOAD_OVERHEAD ?
+		      att_mtu - DSA_ATT_PAYLOAD_OVERHEAD : 0U;
+
+	LOG_INF("%s: ATT MTU=%u payload=%u cfg L2CAP_TX_MTU=%d ACL_TX_SIZE=%d ACL_RX_SIZE=%d",
+		stage, att_mtu, att_payload,
+		CONFIG_BT_L2CAP_TX_MTU, CONFIG_BT_BUF_ACL_TX_SIZE,
+		CONFIG_BT_BUF_ACL_RX_SIZE);
+
+	if (info.type != BT_CONN_TYPE_LE) {
+		LOG_INF("%s: non-LE connection type=%u", stage, info.type);
+		return;
+	}
+
+	LOG_INF("%s: role=%s interval=%u us latency=%u timeout=%u ms security=L%u",
+		stage,
+		info.role == BT_CONN_ROLE_CENTRAL ? "central" : "peripheral",
+		info.le.interval_us, info.le.latency, info.le.timeout * 10U,
+		info.security.level);
+
+#if defined(CONFIG_BT_USER_PHY_UPDATE)
+	if (info.le.phy) {
+		LOG_INF("%s: PHY tx=%s(0x%02x) rx=%s(0x%02x)", stage,
+			phy_to_str(info.le.phy->tx_phy), info.le.phy->tx_phy,
+			phy_to_str(info.le.phy->rx_phy), info.le.phy->rx_phy);
+	} else {
+		LOG_INF("%s: PHY info unavailable", stage);
+	}
+#endif
+
+#if defined(CONFIG_BT_USER_DATA_LEN_UPDATE)
+	if (info.le.data_len) {
+		LOG_INF("%s: data length tx=%u/%u us rx=%u/%u us", stage,
+			info.le.data_len->tx_max_len,
+			info.le.data_len->tx_max_time,
+			info.le.data_len->rx_max_len,
+			info.le.data_len->rx_max_time);
+	} else {
+		LOG_INF("%s: data length info unavailable", stage);
+	}
+#endif
+}
+
+static void request_link_throughput_updates(struct bt_conn *conn)
+{
+	int err;
+
+#if defined(CONFIG_BT_USER_DATA_LEN_UPDATE)
+	err = bt_conn_le_data_len_update(conn, BT_LE_DATA_LEN_PARAM_MAX);
+	if (err) {
+		LOG_WRN("LE data length update request failed (err %d)", err);
+	} else {
+		LOG_INF("LE data length update requested: tx_len=%u tx_time=%u us",
+			BT_GAP_DATA_LEN_MAX, BT_GAP_DATA_TIME_MAX);
+	}
+#else
+	LOG_INF("LE data length update not requested; CONFIG_BT_USER_DATA_LEN_UPDATE=n");
+#endif
+
+#if defined(CONFIG_BT_USER_PHY_UPDATE)
+	err = bt_conn_le_phy_update(conn, BT_CONN_LE_PHY_PARAM_2M);
+	if (err) {
+		LOG_WRN("LE 2M PHY update request failed (err %d)", err);
+	} else {
+		LOG_INF("LE 2M PHY update requested");
+	}
+#else
+	LOG_INF("LE PHY update not requested; CONFIG_BT_USER_PHY_UPDATE=n");
+#endif
+}
+
+static void finish_disconnect_handler(struct k_work *work)
+{
+	int err;
+
+	ARG_UNUSED(work);
+
+	if (!default_conn) {
+		transfer_finish_pending = false;
+		if (stop_after_finished_requested) {
+			(void)radio_stop_scanning();
+		}
+		return;
+	}
+
+	log_conn_throughput_state(default_conn, "Disconnect request");
+
+	err = bt_conn_disconnect(default_conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+	if (err) {
+		LOG_WRN("Disconnect request failed (err %d)", err);
+		transfer_finish_pending = false;
+	}
+}
 
 static bool parse_advertising_data(struct bt_data *data, void *user_data)
 {
@@ -91,7 +223,7 @@ static void scan_recv(const struct bt_le_scan_recv_info *info,
 	bt_data_parse(&ad_copy, parse_advertising_data, &adv);
 
 	if (adv.name_match && adv.manufacturer_match) {
-		printk("DSA beacon detected: id=%u\n", adv.id);
+		LOG_INF("DSA beacon detected: id=%u", adv.id);
 	}
 
 	if (!should_connect_to_adv(&adv)) {
@@ -112,8 +244,14 @@ static void scan_recv(const struct bt_le_scan_recv_info *info,
 	connect_in_progress = true;
 	pending_beacon_id = adv.id;
 
-	err = bt_conn_le_create(info->addr, BT_CONN_LE_CREATE_CONN,
-				BT_LE_CONN_PARAM_DEFAULT, &default_conn);
+	LOG_INF("Creating connection with interval=%u-%u (%u-%u us) latency=%u timeout=%u ms",
+		dsa_conn_param.interval_min, dsa_conn_param.interval_max,
+		BT_CONN_INTERVAL_TO_US(dsa_conn_param.interval_min),
+		BT_CONN_INTERVAL_TO_US(dsa_conn_param.interval_max),
+		dsa_conn_param.latency, dsa_conn_param.timeout * 10U);
+
+	err = bt_conn_le_create(info->addr, BT_CONN_LE_CREATE_CONN, &dsa_conn_param,
+				&default_conn);
 	if (err) {
 		LOG_WRN("Failed to create connection (err %d)", err);
 		default_conn = NULL;
@@ -136,6 +274,7 @@ static void notify_ready_for_nus(struct bt_conn *conn)
 	}
 
 	nus_ready_notified = true;
+	log_conn_throughput_state(conn, "NUS start");
 
 	if (radio_cb.connected) {
 		radio_cb.connected(conn, connected_beacon_id);
@@ -153,8 +292,51 @@ static void exchange_func(struct bt_conn *conn, uint8_t err,
 		LOG_INF("MTU exchange complete");
 	}
 
+	log_conn_throughput_state(conn, "MTU exchange callback");
 	notify_ready_for_nus(conn);
 }
+
+static bool le_param_req(struct bt_conn *conn, struct bt_le_conn_param *param)
+{
+	LOG_WRN("LE parameter request rejected: min=%u (%u us) max=%u (%u us) latency=%u timeout=%u ms",
+		param->interval_min, BT_CONN_INTERVAL_TO_US(param->interval_min),
+		param->interval_max, BT_CONN_INTERVAL_TO_US(param->interval_max),
+		param->latency, param->timeout * 10U);
+	log_conn_throughput_state(conn, "LE parameter request");
+
+	return false;
+}
+
+static void le_param_updated(struct bt_conn *conn, uint16_t interval,
+			     uint16_t latency, uint16_t timeout)
+{
+	LOG_INF("LE parameters updated: interval=%u (%u us) latency=%u timeout=%u ms",
+		interval, BT_CONN_INTERVAL_TO_US(interval), latency,
+		timeout * 10U);
+	log_conn_throughput_state(conn, "LE parameter callback");
+}
+
+#if defined(CONFIG_BT_USER_PHY_UPDATE)
+static void le_phy_updated(struct bt_conn *conn,
+			   struct bt_conn_le_phy_info *param)
+{
+	LOG_INF("LE PHY updated: tx=%s(0x%02x) rx=%s(0x%02x)",
+		phy_to_str(param->tx_phy), param->tx_phy,
+		phy_to_str(param->rx_phy), param->rx_phy);
+	log_conn_throughput_state(conn, "LE PHY callback");
+}
+#endif
+
+#if defined(CONFIG_BT_USER_DATA_LEN_UPDATE)
+static void le_data_len_updated(struct bt_conn *conn,
+				struct bt_conn_le_data_len_info *info)
+{
+	LOG_INF("LE data length updated: tx=%u/%u us rx=%u/%u us",
+		info->tx_max_len, info->tx_max_time, info->rx_max_len,
+		info->rx_max_time);
+	log_conn_throughput_state(conn, "LE data length callback");
+}
+#endif
 
 static void connected(struct bt_conn *conn, uint8_t conn_err)
 {
@@ -186,15 +368,18 @@ static void connected(struct bt_conn *conn, uint8_t conn_err)
 	}
 
 	LOG_INF("Connected: %s", addr);
-	printk("Connected: %s\n", addr);
 	led_set_connected(true);
 	connected_beacon_id = pending_beacon_id;
 	nus_ready_notified = false;
+	log_conn_throughput_state(conn, "Connected initial");
+	request_link_throughput_updates(conn);
 
 	exchange_params.func = exchange_func;
+	LOG_INF("Requesting ATT MTU exchange");
 	err = bt_gatt_exchange_mtu(conn, &exchange_params);
 	if (err) {
 		LOG_WRN("MTU exchange request failed (err %d)", err);
+		log_conn_throughput_state(conn, "MTU exchange request failed");
 		notify_ready_for_nus(conn);
 	}
 }
@@ -206,7 +391,6 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 	LOG_INF("Disconnected: %s reason 0x%02x %s", addr, reason,
 		bt_hci_err_to_str(reason));
-	printk("Disconnected: %s\n", addr);
 
 	if (default_conn == conn) {
 		bt_conn_unref(default_conn);
@@ -215,6 +399,8 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 
 	connect_in_progress = false;
 	nus_ready_notified = false;
+	transfer_finish_pending = false;
+	(void)k_work_cancel_delayable(&finish_disconnect_work);
 	led_set_connected(false);
 
 	if (radio_cb.disconnected) {
@@ -228,7 +414,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 	}
 
 	if (scanning_requested) {
-		printk("Restarting scan after disconnect\n");
+		LOG_INF("Restarting scan after disconnect");
 		(void)radio_start_scanning();
 	}
 }
@@ -236,6 +422,14 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 BT_CONN_CB_DEFINE(conn_callbacks) = {
 	.connected = connected,
 	.disconnected = disconnected,
+	.le_param_req = le_param_req,
+	.le_param_updated = le_param_updated,
+#if defined(CONFIG_BT_USER_PHY_UPDATE)
+	.le_phy_updated = le_phy_updated,
+#endif
+#if defined(CONFIG_BT_USER_DATA_LEN_UPDATE)
+	.le_data_len_updated = le_data_len_updated,
+#endif
 };
 
 int radio_init(const struct radio_callbacks *callbacks)
@@ -246,6 +440,7 @@ int radio_init(const struct radio_callbacks *callbacks)
 		radio_cb = *callbacks;
 	}
 
+	k_work_init_delayable(&finish_disconnect_work, finish_disconnect_handler);
 	bt_le_scan_cb_register(&scan_callbacks);
 
 	err = bt_enable(NULL);
@@ -281,7 +476,7 @@ int radio_start_scanning(void)
 	err = bt_le_scan_start(BT_LE_SCAN_ACTIVE, NULL);
 	if (err == -EALREADY) {
 		led_set_scanning(true);
-		printk("Scanning already active\n");
+		LOG_INF("Scanning already active");
 		return 0;
 	}
 	if (err) {
@@ -291,7 +486,6 @@ int radio_start_scanning(void)
 
 	led_set_scanning(true);
 	LOG_INF("Scan started");
-	printk("Scanning started\n");
 	return 0;
 }
 
@@ -308,7 +502,6 @@ int radio_stop_scanning(void)
 
 	led_set_scanning(false);
 	LOG_INF("Scan stopped");
-	printk("Scanning stopped\n");
 	return 0;
 }
 
@@ -326,24 +519,27 @@ void radio_request_stop_after_finished(void)
 	(void)bt_le_scan_stop();
 	led_set_scanning(false);
 	LOG_INF("Stop requested; waiting for current transfer to finish");
-	printk("Scanning stopped; waiting for current transfer to finish\n");
 }
 
 void radio_transfer_finished(void)
 {
-	int err;
-
 	LOG_INF("Transfer finished");
 
+	if (transfer_finish_pending) {
+		LOG_INF("Disconnect already pending after transfer finished");
+		return;
+	}
+
+	transfer_finish_pending = true;
+
 	if (!default_conn) {
+		transfer_finish_pending = false;
 		if (stop_after_finished_requested) {
 			(void)radio_stop_scanning();
 		}
 		return;
 	}
 
-	err = bt_conn_disconnect(default_conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
-	if (err) {
-		LOG_WRN("Disconnect request failed (err %d)", err);
-	}
+	LOG_INF("Scheduling disconnect after transfer finished");
+	k_work_schedule(&finish_disconnect_work, DSA_FINISH_DISCONNECT_DELAY);
 }

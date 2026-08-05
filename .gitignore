@@ -27,3 +27,6 @@ ipch/
 _build/
 
 build*/
+
+# Python
+__pycache__/

@@ -28,6 +28,7 @@
 #define NUS_TRANSFER_PRIORITY 5
 #define NUS_CONTACT_COUNT_SIZE 3U
 #define NUS_CONTACT_COUNT_MAX 0x00ffffffU
+#define NUS_DATA_PACKET_HEADER_SIZE 2U
 #define NUS_STORAGE_BUSY_RETRY_MS 50
 #define NUS_STORAGE_BUSY_TIMEOUT_MS 2000
 
@@ -264,22 +265,6 @@ static void request_connection_params(struct bt_conn *conn)
 	}
 }
 
-static int send_uptime(struct bt_conn *conn)
-{
-	int err;
-	uint8_t buffer[1 + sizeof(uint32_t)];
-
-	buffer[0] = DSA_NUS_FLAG_TIME;
-	sys_put_be32((uint32_t)k_uptime_seconds(), &buffer[1]);
-
-	err = nus_send_confirmed(conn, buffer, sizeof(buffer));
-	if (err) {
-		printk("Failed to send NUS uptime response (err %d)\n", err);
-	}
-
-	return err;
-}
-
 static int send_uptime_contacts_voltage(struct bt_conn *conn)
 {
 	int err;
@@ -340,6 +325,7 @@ static int send_networkdata(struct bt_conn *conn)
 	uint16_t payload_len;
 	uint16_t bytes_written = 0;
 	uint16_t contact_payload_len;
+	uint8_t contacts_written;
 	uint8_t buffer[NUS_MAX_PAYLOAD_LEN];
 	
 	if (max_payload > NUS_ATT_NOTIFY_HEADER_LEN) {
@@ -349,18 +335,25 @@ static int send_networkdata(struct bt_conn *conn)
 	}
 
 	payload_len = MIN(max_payload, (uint16_t)sizeof(buffer));
-	if (payload_len <= 1) {
+	if (payload_len <= NUS_DATA_PACKET_HEADER_SIZE) {
 		return -EMSGSIZE;
 	}
 
-	contact_payload_len = payload_len - 1;
+	contact_payload_len = MIN(
+		payload_len - NUS_DATA_PACKET_HEADER_SIZE,
+		(uint16_t)(NETWORK_CONTACT_ENTRY_SIZE * UINT8_MAX));
+	contact_payload_len -= contact_payload_len % NETWORK_CONTACT_ENTRY_SIZE;
+	if (contact_payload_len == 0) {
+		return -EMSGSIZE;
+	}
 	buffer[0] = DSA_NUS_FLAG_DATA;
 
 	do {
 		retry_deadline = k_uptime_get() + NUS_STORAGE_BUSY_TIMEOUT_MS;
 		do {
 			err = network_contact_export_begin(
-				&buffer[1], contact_payload_len, &bytes_written);
+				&buffer[NUS_DATA_PACKET_HEADER_SIZE],
+				contact_payload_len, &bytes_written);
 			if (err != -EBUSY) {
 				break;
 			}
@@ -375,7 +368,12 @@ static int send_networkdata(struct bt_conn *conn)
 		}
 
 		if (bytes_written > 0) {
-			err = nus_send_confirmed(conn, buffer, bytes_written + 1);
+			contacts_written =
+				bytes_written / NETWORK_CONTACT_ENTRY_SIZE;
+			buffer[1] = contacts_written;
+			err = nus_send_confirmed(
+				conn, buffer,
+				bytes_written + NUS_DATA_PACKET_HEADER_SIZE);
 			if (err) {
 				printk("Failed to send NUS network data (err %d)\n", err);
 				network_contact_export_abort();
@@ -541,17 +539,13 @@ static void transfer_work_handler(struct k_work *work)
 		return;
 	}
 
-	printk("Starting sending data\n");
-	err = send_uptime(conn);
-	if (err) {
-		goto transfer_failed;
-	}
-	printk("Sent time\n");
+	printk("Starting sending data\n");	
 
 	err = send_uptime_contacts_voltage(conn);
 	if (err) {
 		goto transfer_failed;
 	}
+	printk("Sent time and status\n");
 
 	err = send_self_reports(conn);
 	if (err) {

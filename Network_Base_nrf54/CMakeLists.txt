@@ -16,5 +16,23 @@ target_sources(app PRIVATE
   src/led.c
   src/radio.c
   src/nus.c
+  src/message_parser.c
+  src/output.c
 )
+
+if(CONFIG_DSA_OUTPUT STREQUAL "UART")
+  target_sources(app PRIVATE src/uart_output.c)
+  target_compile_definitions(app PRIVATE DSA_OUTPUT_UART)
+elseif(CONFIG_DSA_OUTPUT STREQUAL "RTT")
+  target_sources(app PRIVATE src/rtt_output.c)
+  target_compile_definitions(app PRIVATE DSA_OUTPUT_RTT)
+else()
+  message(FATAL_ERROR "Unsupported CONFIG_DSA_OUTPUT value: ${CONFIG_DSA_OUTPUT}. Use UART or RTT.")
+endif()
+
+if(CONFIG_DSA_OUTPUT_FORMAT_PARSED)
+  target_compile_definitions(app PRIVATE DSA_OUTPUT_FORMAT_PARSED)
+elseif(CONFIG_DSA_OUTPUT_FORMAT_RAW)
+  target_compile_definitions(app PRIVATE DSA_OUTPUT_FORMAT_RAW)
+endif()
 # NORDIC SDK APP END

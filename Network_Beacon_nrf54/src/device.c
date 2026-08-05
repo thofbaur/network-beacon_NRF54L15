@@ -100,3 +100,17 @@ void device_set_network_status(uint8_t status)
 {
     atomic_set(&status_device.network, status);
 }
+
+void device_set_network_status_bits(uint8_t mask, uint8_t status)
+{
+	uint8_t previous;
+	uint8_t updated;
+
+	previous = device_get_network_status();
+	updated = (previous & ~mask) | (status & mask);
+	atomic_set(&status_device.network, updated);
+
+	if (updated != previous) {
+		radio_schedule_status_update();
+	}
+}

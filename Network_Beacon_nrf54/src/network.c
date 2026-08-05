@@ -33,7 +33,8 @@ typedef struct {
 	uint8_t     time[3];
 	uint8_t     rssi;  // negative value, e.g., -80 dBm is stored as 80
 } contact_entry;
-#define CONTACT_ENTRY_SIZE 5
+BUILD_ASSERT(sizeof(contact_entry) == NETWORK_CONTACT_ENTRY_SIZE,
+	     "Contact entry size must match exported contact format");
 
 
 
@@ -123,8 +124,10 @@ int network_init(void)
 		printk("Failed to initialize network status (err %d)\n", err);
 		return err;
 	}
-	device_set_network_status(contact_status_from_count(
-		(uint16_t)MIN(contact_total, UINT16_MAX)));
+	device_set_network_status_bits(
+		DATA_LEVEL_MASK,
+		contact_status_from_count(
+			(uint16_t)MIN(contact_total, UINT16_MAX)));
 
 	return 0;
 }
@@ -338,11 +341,11 @@ static void network_flush_handler(struct k_work *work)
 
 	entries_to_flush = MIN((uint16_t)NETWORK_STORAGE_BLOCK_CONTACTS,
 			       contact_count);
-	bytes_to_flush = entries_to_flush * CONTACT_ENTRY_SIZE;
+	bytes_to_flush = entries_to_flush * NETWORK_CONTACT_ENTRY_SIZE;
 	read_index = idx_read;
 
 	for (uint16_t i = 0; i < entries_to_flush; i++) {
-		contact_entry_write(&contact_flush_block[i * CONTACT_ENTRY_SIZE],
+		contact_entry_write(&contact_flush_block[i * NETWORK_CONTACT_ENTRY_SIZE],
 				    &data_array[read_index]);
 		read_index = (read_index + 1) %
 			     CONFIG_DSA_NETWORK_RING_COUNT;
@@ -408,7 +411,9 @@ static void network_status_update_handler(struct k_work *work)
 		number_dataset = UINT16_MAX;
 	}
 
-	device_set_network_status(contact_status_from_count((uint16_t)number_dataset));
+	device_set_network_status_bits(
+		DATA_LEVEL_MASK,
+		contact_status_from_count((uint16_t)number_dataset));
 	err = adv_update();
 	if (err) {
 		printk("Failed to update network status advertising data (err %d)\n", err);
@@ -504,7 +509,7 @@ int network_contact_export_begin(uint8_t *buffer, uint16_t buffer_len,
 		return -EINVAL;
 	}
 
-	buffer_len -= buffer_len % CONTACT_ENTRY_SIZE;
+	buffer_len -= buffer_len % NETWORK_CONTACT_ENTRY_SIZE;
 	*bytes_written = 0;
 	if (buffer_len == 0) {
 		return 0;
@@ -563,9 +568,9 @@ int network_contact_export_begin(uint8_t *buffer, uint16_t buffer_len,
 	entries_available = contact_count;
 
 	while (entries_available > 0 &&
-	       (buffer_len - written) >= CONTACT_ENTRY_SIZE) {
+	       (buffer_len - written) >= NETWORK_CONTACT_ENTRY_SIZE) {
 		contact_entry_write(&buffer[written], &data_array[read_index]);
-		written += CONTACT_ENTRY_SIZE;
+		written += NETWORK_CONTACT_ENTRY_SIZE;
 
 		read_index = (read_index + 1) %
 			     CONFIG_DSA_NETWORK_RING_COUNT;
@@ -613,7 +618,7 @@ int network_contact_export_commit(void)
 		}
 		break;
 	case CONTACT_EXPORT_RAM:
-		entries_to_drop = exported_bytes / CONTACT_ENTRY_SIZE;
+		entries_to_drop = exported_bytes / NETWORK_CONTACT_ENTRY_SIZE;
 		if (entries_to_drop > contact_count) {
 			err = -EIO;
 			break;
