@@ -13,6 +13,14 @@ config DSA_OUTPUT
 	  Select the output backend for DSA messages.
 	  Supported values are UART and RTT.
 
+config DSA_READOUT_LEVEL
+	int "DSA readout level"
+	range 0 7
+	default 1
+	help
+	  Minimum decoded network data level required before connecting to a
+	  matching DSA beacon.
+
 choice DSA_OUTPUT_FORMAT
 	prompt "DSA output data format"
 	default DSA_OUTPUT_FORMAT_PARSED

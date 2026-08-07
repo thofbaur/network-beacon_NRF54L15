@@ -8,6 +8,7 @@
 #define DSA_NUS_FLAG_CONTROL			0x04
 #define DSA_NUS_FLAG_TIME_CONTACTS_VOLTAGE	0x05
 #define DSA_NUS_FLAG_SELF_REPORT		0x06
+#define DSA_NUS_FLAG_ECO_LOG			0x07
 
 /* Manufacturer-data byte positions. */
 #define ADV_POS_ID 0
@@ -24,8 +25,7 @@
 #define BLE_UPDATE_STATUS_ERROR		BIT(2)
 
 /* Network data-level encoding. Threshold values remain provisional. */
-#define READOUT_LEVEL	0
-
+// ToDo: set production values for data-level thresholds
 #define DATA_LEVEL_1	0
 #define DATA_LEVEL_2	1
 #define DATA_LEVEL_3	4
@@ -37,8 +37,13 @@
 #define DATA_LEVEL_MASK		0x0F
 #define P_SHIFT_STATUS_DATA	0
 
-#define BATTERY_LEVEL_MASK	0xF0
+/* Battery status only ever uses values 0-3; the mask was narrowed from
+ * 0xF0 to free bit 7 for ECO_MODE_MASK. See DECISIONS.md.
+ */
+#define BATTERY_LEVEL_MASK	0x70
 #define P_SHIFT_STATUS_BATTERY	4
+
+#define ECO_MODE_MASK		BIT(7)
 
 #define BATTERY_LEVEL_1_THRESHOLD_MV	3000
 #define BATTERY_LEVEL_2_THRESHOLD_MV	2800
@@ -50,6 +55,7 @@
 #define P_BASE_MAIN			0x20
 #define P_BASE_NETWORK		0x60
 #define P_BASE_RADIO		0x80
+#define P_BASE_MOTION		0xA0
 
 /* Main parameters. */
 #define P_MAIN_LED_ACTIVE		(P_BASE_MAIN + 1)
@@ -61,14 +67,25 @@
 #define P_NETWORK_RESET_PARAMS		(P_BASE_NETWORK + 12)
 #define P_TRACKING_ACTIVE		(P_BASE_NETWORK + 13)
 
-/* Radio parameters. */
+/* Radio parameters.
+ * Low-activity mode was replaced by eco mode (see DECISIONS.md); +4
+ * (formerly P_SCAN_INTERVAL_LOWACTIVITY_MS, a millisecond BLE scan
+ * interval) is retired rather than reinterpreted, since eco's scan burst
+ * period is a plain-seconds duration with no native BLE representation.
+ * Do not reuse +4 for an unrelated parameter.
+ */
 #define P_ADV_INTERVAL_MS			(P_BASE_RADIO + 1)
-#define P_ADV_INTERVAL_LOWACTIVITY_MS	(P_BASE_RADIO + 2)
+#define P_ADV_INTERVAL_ECO_MS			(P_BASE_RADIO + 2)
 #define P_SCAN_INTERVAL_MS			(P_BASE_RADIO + 3)
-#define P_SCAN_INTERVAL_LOWACTIVITY_MS	(P_BASE_RADIO + 4)
 #define P_SCAN_WINDOW_MS			(P_BASE_RADIO + 5)
-#define P_SCAN_WINDOW_LOWACTIVITY_MS	(P_BASE_RADIO + 6)
+#define P_ECO_SCAN_WINDOW_MS			(P_BASE_RADIO + 6)
+#define P_ECO_SCAN_PERIOD_S			(P_BASE_RADIO + 7)
 #define P_RADIO_RESET_PARAMS			(P_BASE_RADIO + 12)
 #define P_SET_RAD_ACTIVE			(P_BASE_RADIO + 13)
+
+/* Motion / inactivity parameters. */
+#define P_MOTION_ACTIVE				(P_BASE_MOTION + 1)
+#define P_MOTION_INACTIVITY_TIMEOUT_S		(P_BASE_MOTION + 2)
+#define P_MOTION_RESET_PARAMS			(P_BASE_MOTION + 12)
 
 #endif /* COMMON_INCLUDES_H_ */

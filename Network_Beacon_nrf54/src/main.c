@@ -20,6 +20,8 @@
 #include "self_report.h"
 #include "battery_voltage.h"
 #include "development_validation.h"
+#include "motion.h"
+#include "eco_log.h"
 
 int main(void)
 {
@@ -33,6 +35,11 @@ int main(void)
 		printk("Self-report subsystem initialization failed (err %d)\n",
 		       err);
 		return err;
+	}
+
+	err = eco_log_init();
+	if (err) {
+		printk("Eco log initialization failed (err %d)\n", err);
 	}
 
 	err = network_init();
@@ -50,6 +57,11 @@ int main(void)
 	if (err) {
 		printk("Radio initialization failed (err %d)\n", err);
 		return err;
+	}
+
+	err = motion_init();
+	if (err) {
+		printk("Motion subsystem initialization failed (err %d)\n", err);
 	}
 
 	/* Start advertising and scanning*/

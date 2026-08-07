@@ -15,6 +15,7 @@ LOG_MODULE_DECLARE(network_base);
 #define DSA_DATA_COUNT_LEN 1
 #define DSA_DATA_SET_LEN 5
 #define DSA_SELF_REPORT_SET_LEN 3
+#define DSA_ECO_LOG_SET_LEN 6
 #define DSA_VOLTAGE_LEN 2
 #define DSA_CONTROL_LEN 8
 #define DSA_TIME_CONTACT_VOLTAGE_LEN 9
@@ -36,6 +37,8 @@ static size_t expected_len_for_flag(uint8_t flag)
 		return DSA_CONTROL_LEN;
 	case DSA_NUS_FLAG_SELF_REPORT:
 		return DSA_SELF_REPORT_SET_LEN;
+	case DSA_NUS_FLAG_ECO_LOG:
+		return DSA_ECO_LOG_SET_LEN;
 	default:
 		return 0;
 	}
@@ -129,6 +132,21 @@ static void handle_self_report_block(uint8_t beacon_id, const uint8_t *data,
 
 		output_messagef("ID:%u  Self-report time: %u", beacon_id,
 				timer);
+	}
+}
+
+static void handle_eco_log_block(uint8_t beacon_id, const uint8_t *data,
+				 size_t len)
+{
+	size_t entry_count = len / DSA_ECO_LOG_SET_LEN;
+
+	for (size_t i = 0; i < entry_count; i++) {
+		const uint8_t *entry = &data[i * DSA_ECO_LOG_SET_LEN];
+		uint32_t enter_time = uint24_be_decode(entry);
+		uint32_t leave_time = uint24_be_decode(&entry[3]);
+
+		output_messagef("ID:%u Eco session enter:%u leave:%u",
+				beacon_id, enter_time, leave_time);
 	}
 }
 
@@ -227,6 +245,14 @@ static void handle_complete_package(uint8_t beacon_id, uint8_t flag,
 			break;
 		}
 		handle_self_report_block(beacon_id, data, len);
+		break;
+	case DSA_NUS_FLAG_ECO_LOG:
+		if ((len == 0) || ((len % DSA_ECO_LOG_SET_LEN) != 0)) {
+			LOG_WRN("Invalid ECO_LOG block length %u",
+				(unsigned int)len);
+			break;
+		}
+		handle_eco_log_block(beacon_id, data, len);
 		break;
 	default:
 		handle_default_package(beacon_id, data, len);

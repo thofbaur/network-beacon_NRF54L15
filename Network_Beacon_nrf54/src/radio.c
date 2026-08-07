@@ -16,7 +16,9 @@
 #include "radio.h"
 #include "nus.h"
 #include "device.h"
+#include "eco_log.h"
 #include "led.h"
+#include "motion.h"
 #include "storage_work_queue.h"
 /* Radio Parameters
  *
@@ -29,22 +31,24 @@
 	BT_GAP_MS_TO_SCAN_WINDOW(CONFIG_DSA_SCAN_WINDOW_MS)
 #define SCAN_INTERVAL \
 	BT_GAP_MS_TO_SCAN_INTERVAL(CONFIG_DSA_SCAN_INTERVAL_MS)
-#define CONNECTABLE_ADV_INTERVAL_MIN_LOW_ACTIVITY \
+#define CONNECTABLE_ADV_INTERVAL_MIN_ECO \
 	BT_GAP_MS_TO_ADV_INTERVAL( \
-		CONFIG_DSA_LOW_ACTIVITY_ADV_INTERVAL_MIN_MS)
-#define CONNECTABLE_ADV_INTERVAL_MAX_LOW_ACTIVITY \
+		CONFIG_DSA_ECO_ADV_INTERVAL_MIN_MS)
+#define CONNECTABLE_ADV_INTERVAL_MAX_ECO \
 	BT_GAP_MS_TO_ADV_INTERVAL( \
-		CONFIG_DSA_LOW_ACTIVITY_ADV_INTERVAL_MAX_MS)
-#define SCAN_WINDOW_LOW_ACTIVITY \
-	BT_GAP_MS_TO_SCAN_WINDOW(CONFIG_DSA_LOW_ACTIVITY_SCAN_WINDOW_MS)
-#define SCAN_INTERVAL_LOW_ACTIVITY \
-	BT_GAP_MS_TO_SCAN_INTERVAL(CONFIG_DSA_LOW_ACTIVITY_SCAN_INTERVAL_MS)
+		CONFIG_DSA_ECO_ADV_INTERVAL_MAX_MS)
+#define ECO_SCAN_WINDOW \
+	BT_GAP_MS_TO_SCAN_WINDOW(CONFIG_DSA_ECO_SCAN_WINDOW_MS)
 #define HIGH_ACTIVITY				1
-#define LOW_ACTIVITY				0
+#define ECO_ACTIVITY				0
 #define COMMAND_TARGET_BROADCAST	0xff
 #define COMMAND_DATA_MAX_LEN		31
 #define COMMAND_QUEUE_DEPTH		4
-#define RADIO_PARAMS_STORAGE_KEY	"dsa/radio"
+/* Renamed from "dsa/radio": low-activity mode was replaced by eco mode and
+ * the stored field layout's meaning changed (see DECISIONS.md), so the old
+ * key is deliberately abandoned rather than reinterpreted.
+ */
+#define RADIO_PARAMS_STORAGE_KEY	"dsa/radio2"
 #define RADIO_PARAMS_STORED_SIZE	17U
 
 #define SCAN_INTERVAL_MIN_UNITS		0x0004
@@ -63,18 +67,32 @@ static const struct bt_data ad[] = {
 struct radio_params {
 	uint16_t	adv_interval_min;
 	uint16_t	adv_interval_max;
-	uint16_t	adv_interval_min_lowactivity;
-	uint16_t	adv_interval_max_lowactivity;
+	uint16_t	adv_interval_min_eco;
+	uint16_t	adv_interval_max_eco;
 	uint16_t	scan_interval;
-	uint16_t	scan_interval_lowactivity;
 	uint16_t	scan_window;
-	uint16_t	scan_window_lowactivity;
+	/* Burst duration (BLE window units) for eco-mode scanning. */
+	uint16_t	eco_scan_window;
+	/* Burst period in seconds, not BLE units: exceeds the ~10.24 s max
+	 * of the native scan-interval field, so eco scanning is periodic
+	 * application-triggered bursts rather than a single scan parameter.
+	 */
+	uint16_t	eco_scan_period_s;
 	uint8_t		mode;
 };
 
 static struct radio_params params_radio;
 static struct radio_params command_old_params_radio;
 static bool command_batch_active;
+static bool eco_override_active;
+static bool eco_scan_burst_active;
+/* Tracks the mode radio_apply_mode_locked() last actually applied, so eco
+ * session logging (eco_log_enter/leave) fires only on real transitions,
+ * regardless of which of the two triggers (manual command or motion
+ * override) caused it, and regardless of how many times the function is
+ * called for unrelated parameter changes while the mode itself is unchanged.
+ */
+static uint8_t last_applied_mode = HIGH_ACTIVITY;
 
 static struct bt_le_scan_param scan_params;
 static struct bt_le_adv_param adv_params;
@@ -112,6 +130,9 @@ struct command_msg {
 
 static void command_work_handler(struct k_work *work);
 static void radio_status_update_handler(struct k_work *work);
+static void eco_scan_handler(struct k_work *work);
+static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type,
+		    struct net_buf_simple *buf);
 static void radio_status_set_local(uint8_t mask, bool active);
 static void adv_prepare_status_data(void);
 static int adv_update_locked(void);
@@ -125,28 +146,29 @@ static bool radio_params_equal(const struct radio_params *a,
 K_MSGQ_DEFINE(command_msgq, sizeof(struct command_msg), COMMAND_QUEUE_DEPTH, 1);
 static K_WORK_DEFINE(command_work, command_work_handler);
 static K_WORK_DEFINE(radio_status_update_work, radio_status_update_handler);
+static K_WORK_DELAYABLE_DEFINE(eco_scan_work, eco_scan_handler);
 static K_MUTEX_DEFINE(radio_operation_lock);
 
-void set_ble_params(struct radio_params *params);
-static uint8_t update_ble_params(struct bt_le_scan_param *scan_params, struct bt_le_adv_param *adv_params);
+static uint8_t radio_apply_mode_locked(uint8_t mode);
 static int radio_params_validate(const struct radio_params *params);
 static int scan_init(void);
 
-
+BUILD_ASSERT(CONFIG_DSA_ECO_SCAN_INTERVAL_MS % 1000 == 0,
+	     "Eco scan burst period must use whole seconds");
 
 void set_radio_params_init(void)
 {
-	params_radio.adv_interval_min 			= CONNECTABLE_ADV_INTERVAL_MIN;
-	params_radio.adv_interval_max 			= CONNECTABLE_ADV_INTERVAL_MAX;
-	params_radio.adv_interval_min_lowactivity 	= CONNECTABLE_ADV_INTERVAL_MIN_LOW_ACTIVITY;
-	params_radio.adv_interval_max_lowactivity 	= CONNECTABLE_ADV_INTERVAL_MAX_LOW_ACTIVITY;
-	params_radio.scan_interval 			= (uint16_t)SCAN_INTERVAL;
-	params_radio.scan_interval_lowactivity 	= (uint16_t)SCAN_INTERVAL_LOW_ACTIVITY;
-	params_radio.scan_window 			= (uint16_t)SCAN_WINDOW;
-	params_radio.scan_window_lowactivity 	= (uint16_t)SCAN_WINDOW_LOW_ACTIVITY;
+	params_radio.adv_interval_min 		= CONNECTABLE_ADV_INTERVAL_MIN;
+	params_radio.adv_interval_max 		= CONNECTABLE_ADV_INTERVAL_MAX;
+	params_radio.adv_interval_min_eco 	= CONNECTABLE_ADV_INTERVAL_MIN_ECO;
+	params_radio.adv_interval_max_eco 	= CONNECTABLE_ADV_INTERVAL_MAX_ECO;
+	params_radio.scan_interval 		= (uint16_t)SCAN_INTERVAL;
+	params_radio.scan_window 		= (uint16_t)SCAN_WINDOW;
+	params_radio.eco_scan_window 		= (uint16_t)ECO_SCAN_WINDOW;
+	params_radio.eco_scan_period_s 	= CONFIG_DSA_ECO_SCAN_INTERVAL_MS / 1000;
 	params_radio.mode =
 		IS_ENABLED(CONFIG_DSA_RADIO_DEFAULT_HIGH_ACTIVITY) ?
-			HIGH_ACTIVITY : LOW_ACTIVITY;
+			HIGH_ACTIVITY : ECO_ACTIVITY;
 }
 
 static bool parse_advertisement_cb(struct bt_data *data, void *user_data)
@@ -203,15 +225,15 @@ static void radio_apply_command(uint8_t parameter, uint16_t value)
 		params_radio.adv_interval_min = converted;
 		params_radio.adv_interval_max = converted;
 		break;
-	case P_ADV_INTERVAL_LOWACTIVITY_MS:
+	case P_ADV_INTERVAL_ECO_MS:
 		err = adv_ms_to_units(value, &converted);
 		if (err) {
-			printk("Rejecting invalid low-activity advertising interval %u ms\n",
+			printk("Rejecting invalid eco advertising interval %u ms\n",
 			       value);
 			return;
 		}
-		params_radio.adv_interval_min_lowactivity = converted;
-		params_radio.adv_interval_max_lowactivity = converted;
+		params_radio.adv_interval_min_eco = converted;
+		params_radio.adv_interval_max_eco = converted;
 		break;
 	case P_SCAN_INTERVAL_MS:
 		err = scan_ms_to_units(value, &converted);
@@ -221,14 +243,12 @@ static void radio_apply_command(uint8_t parameter, uint16_t value)
 		}
 		params_radio.scan_interval = converted;
 		break;
-	case P_SCAN_INTERVAL_LOWACTIVITY_MS:
-		err = scan_ms_to_units(value, &converted);
-		if (err) {
-			printk("Rejecting invalid low-activity scan interval %u ms\n",
-			       value);
+	case P_ECO_SCAN_PERIOD_S:
+		if (value == 0U) {
+			printk("Rejecting zero eco scan burst period\n");
 			return;
 		}
-		params_radio.scan_interval_lowactivity = converted;
+		params_radio.eco_scan_period_s = value;
 		break;
 	case P_SCAN_WINDOW_MS:
 		err = scan_ms_to_units(value, &converted);
@@ -238,20 +258,20 @@ static void radio_apply_command(uint8_t parameter, uint16_t value)
 		}
 		params_radio.scan_window = converted;
 		break;
-	case P_SCAN_WINDOW_LOWACTIVITY_MS:
+	case P_ECO_SCAN_WINDOW_MS:
 		err = scan_ms_to_units(value, &converted);
 		if (err) {
-			printk("Rejecting invalid low-activity scan window %u ms\n",
+			printk("Rejecting invalid eco scan burst window %u ms\n",
 			       value);
 			return;
 		}
-		params_radio.scan_window_lowactivity = converted;
+		params_radio.eco_scan_window = converted;
 		break;
 	case P_RADIO_RESET_PARAMS:
 		set_radio_params_init();
 		break;
 	case P_SET_RAD_ACTIVE:
-		params_radio.mode = value ? HIGH_ACTIVITY : LOW_ACTIVITY;
+		params_radio.mode = value ? HIGH_ACTIVITY : ECO_ACTIVITY;
 		break;
 	default:
 		printk("Unknown radio parameter 0x%02x value %u\n", parameter, value);
@@ -259,10 +279,96 @@ static void radio_apply_command(uint8_t parameter, uint16_t value)
 	}
 }
 
+/* Applies advertising + scanning for the given mode (HIGH_ACTIVITY or
+ * ECO_ACTIVITY) and returns BLE_UPDATE_*_ERROR bits. Caller must hold
+ * radio_operation_lock. Used by both the manually-persisted radio mode
+ * (P_SET_RAD_ACTIVE) and motion.c's temporary, non-persisted override, so
+ * the two never diverge in how "eco" is actually implemented.
+ *
+ * Advertising keeps a normal, continuous parameter set in both modes.
+ * Scanning differs: HIGH_ACTIVITY scans continuously; ECO_ACTIVITY scans in
+ * short periodic bursts (eco_scan_handler), since CONFIG_DSA_ECO_SCAN_INTERVAL_MS
+ * exceeds what the BLE scan-interval field can express (max ~10.24 s).
+ */
+static uint8_t radio_apply_mode_locked(uint8_t mode)
+{
+	int err;
+	uint8_t errors = 0;
+
+	if (mode != last_applied_mode) {
+		if (mode == ECO_ACTIVITY) {
+			eco_log_enter();
+		} else {
+			eco_log_leave();
+		}
+		last_applied_mode = mode;
+	}
+
+	k_work_cancel_delayable(&eco_scan_work);
+	err = bt_le_scan_stop();
+	if (err && err != -EALREADY) {
+		printk("Scan stop before mode change failed (err %d)\n", err);
+		radio_status_set_local(RADIO_STATUS_SCAN_RUNTIME_ERROR, true);
+		errors |= BLE_UPDATE_SCAN_ERROR;
+	}
+	eco_scan_burst_active = false;
+
+	err = bt_le_adv_stop();
+	if (err && err != -EALREADY) {
+		printk("Advertising stop before mode change failed (err %d)\n", err);
+		errors |= BLE_UPDATE_ADV_ERROR;
+	}
+
+	if (mode == ECO_ACTIVITY) {
+		adv_params.interval_min = params_radio.adv_interval_min_eco;
+		adv_params.interval_max = params_radio.adv_interval_max_eco;
+	} else {
+		adv_params.interval_min = params_radio.adv_interval_min;
+		adv_params.interval_max = params_radio.adv_interval_max;
+	}
+
+	err = bt_le_adv_start(&adv_params, ad, ARRAY_SIZE(ad), NULL, 0);
+	if (err && err != -EALREADY) {
+		printk("Advertising start failed (err %d)\n", err);
+		errors |= BLE_UPDATE_ADV_ERROR;
+	}
+
+	scan_params.type = BT_LE_SCAN_TYPE_PASSIVE;
+	scan_params.options = BT_LE_SCAN_OPT_FILTER_ACCEPT_LIST;
+
+	if (mode == ECO_ACTIVITY) {
+		scan_params.interval = params_radio.eco_scan_window;
+		scan_params.window = params_radio.eco_scan_window;
+		radio_status_set_local(RADIO_STATUS_SCAN_RUNTIME_ERROR, false);
+		k_work_reschedule(&eco_scan_work, K_NO_WAIT);
+	} else {
+		scan_params.interval = params_radio.scan_interval;
+		scan_params.window = params_radio.scan_window;
+		err = bt_le_scan_start(&scan_params, scan_cb);
+		if (err && err != -EALREADY) {
+			printk("Scan start failed (err %d)\n", err);
+			radio_status_set_local(RADIO_STATUS_SCAN_RUNTIME_ERROR, true);
+			errors |= BLE_UPDATE_SCAN_ERROR;
+		} else {
+			radio_status_set_local(RADIO_STATUS_SCAN_RUNTIME_ERROR, false);
+		}
+	}
+
+	if (!(errors & BLE_UPDATE_ADV_ERROR)) {
+		err = adv_update_locked();
+		if (err) {
+			errors |= BLE_UPDATE_STATUS_ERROR;
+		}
+	}
+
+	return errors;
+}
+
 void radio_command_commit(void)
 {
 	uint8_t update_errors;
 	int err;
+	uint8_t effective_mode;
 
 	if (!command_batch_active) {
 		return;
@@ -277,15 +383,20 @@ void radio_command_commit(void)
 			return;
 		}
 
-		set_ble_params(&params_radio);
-		update_errors = update_ble_params(&scan_params, &adv_params);
+		k_mutex_lock(&radio_operation_lock, K_FOREVER);
+		effective_mode = eco_override_active ? ECO_ACTIVITY : params_radio.mode;
+		update_errors = radio_apply_mode_locked(effective_mode);
+		k_mutex_unlock(&radio_operation_lock);
+
 		if (update_errors & (BLE_UPDATE_ADV_ERROR | BLE_UPDATE_SCAN_ERROR)) {
 			printk("Radio parameter update had error flags 0x%02x, restoring old parameters\n",
 			       update_errors);
 
 			params_radio = command_old_params_radio;
-			set_ble_params(&params_radio);
-			update_errors = update_ble_params(&scan_params, &adv_params);
+			k_mutex_lock(&radio_operation_lock, K_FOREVER);
+			effective_mode = eco_override_active ? ECO_ACTIVITY : params_radio.mode;
+			update_errors = radio_apply_mode_locked(effective_mode);
+			k_mutex_unlock(&radio_operation_lock);
 			if (update_errors & BLE_UPDATE_ADV_ERROR) {
 				printk("Failed to restore advertising parameters, not saving radio parameters\n");
 			} else if (update_errors & BLE_UPDATE_SCAN_ERROR) {
@@ -304,6 +415,68 @@ void radio_command_commit(void)
 	}
 }
 
+/* Scanning while inactive is duty-cycled in software: eco_scan_period_s
+ * (5 minutes by default) is far beyond what the BLE scan-interval field can
+ * express (max ~10.24 s), so this alternates short scan bursts with the
+ * radio off in between rather than setting a single scan parameter.
+ */
+static void eco_scan_handler(struct k_work *work)
+{
+	int err;
+
+	ARG_UNUSED(work);
+
+	k_mutex_lock(&radio_operation_lock, K_FOREVER);
+	if (!eco_override_active) {
+		k_mutex_unlock(&radio_operation_lock);
+		return;
+	}
+
+	if (eco_scan_burst_active) {
+		err = bt_le_scan_stop();
+		if (err && err != -EALREADY) {
+			printk("Energy-conservation scan burst stop failed (err %d)\n", err);
+		}
+		eco_scan_burst_active = false;
+		k_work_reschedule(&eco_scan_work,
+				  K_SECONDS(params_radio.eco_scan_period_s));
+	} else {
+		err = bt_le_scan_start(&scan_params, scan_cb);
+		if (err && err != -EALREADY) {
+			printk("Energy-conservation scan burst start failed (err %d)\n", err);
+		}
+		eco_scan_burst_active = true;
+		/* Convert the BLE-unit burst window back to milliseconds
+		 * (inverse of scan_ms_to_units's ms*8/5) for the wall-clock
+		 * delay before ending the burst.
+		 */
+		k_work_reschedule(&eco_scan_work,
+				  K_MSEC(((uint32_t)params_radio.eco_scan_window * 5U) / 8U));
+	}
+	k_mutex_unlock(&radio_operation_lock);
+}
+
+void radio_set_eco_override(bool active)
+{
+	uint8_t update_errors;
+
+	k_mutex_lock(&radio_operation_lock, K_FOREVER);
+
+	if (eco_override_active == active) {
+		k_mutex_unlock(&radio_operation_lock);
+		return;
+	}
+	eco_override_active = active;
+
+	update_errors = radio_apply_mode_locked(active ? ECO_ACTIVITY : params_radio.mode);
+	if (update_errors & (BLE_UPDATE_ADV_ERROR | BLE_UPDATE_SCAN_ERROR)) {
+		printk("Energy-conservation radio update had error flags 0x%02x\n",
+		       update_errors);
+	}
+
+	k_mutex_unlock(&radio_operation_lock);
+}
+
 int radio_params_load(void)
 {
 	uint8_t stored[RADIO_PARAMS_STORED_SIZE];
@@ -311,43 +484,31 @@ int radio_params_load(void)
 	int err;
 
 	err = param_storage_load(RADIO_PARAMS_STORAGE_KEY, stored, sizeof(stored));
-	if (!err) {
-		loaded.adv_interval_min = sys_get_be16(&stored[0]);
-		loaded.adv_interval_max = sys_get_be16(&stored[2]);
-		loaded.adv_interval_min_lowactivity = sys_get_be16(&stored[4]);
-		loaded.adv_interval_max_lowactivity = sys_get_be16(&stored[6]);
-		loaded.scan_interval = sys_get_be16(&stored[8]);
-		loaded.scan_interval_lowactivity = sys_get_be16(&stored[10]);
-		loaded.scan_window = sys_get_be16(&stored[12]);
-		loaded.scan_window_lowactivity = sys_get_be16(&stored[14]);
-		loaded.mode = stored[16];
-		if (radio_params_validate(&loaded)) {
-			device_set_storage_fault(STORAGE_FAULT_RADIO_PARAMS, true);
-			return -EBADMSG;
-		}
-		params_radio = loaded;
-		device_set_storage_fault(STORAGE_FAULT_RADIO_PARAMS, false);
-		return 0;
-	}
 	if (err == -ENOENT) {
 		device_set_storage_fault(STORAGE_FAULT_RADIO_PARAMS, false);
 		return err;
 	}
-
-	err = param_storage_load_legacy(RADIO_PARAMS_STORAGE_KEY,
-					&loaded, sizeof(loaded));
-	if (err || radio_params_validate(&loaded)) {
+	if (err) {
 		device_set_storage_fault(STORAGE_FAULT_RADIO_PARAMS, true);
-		return err ? err : -EBADMSG;
+		return err;
 	}
 
-	params_radio = loaded;
-	err = radio_params_save();
-	if (!err) {
-		printk("Migrated radio parameters to versioned storage\n");
+	loaded.adv_interval_min = sys_get_be16(&stored[0]);
+	loaded.adv_interval_max = sys_get_be16(&stored[2]);
+	loaded.adv_interval_min_eco = sys_get_be16(&stored[4]);
+	loaded.adv_interval_max_eco = sys_get_be16(&stored[6]);
+	loaded.scan_interval = sys_get_be16(&stored[8]);
+	loaded.scan_window = sys_get_be16(&stored[10]);
+	loaded.eco_scan_window = sys_get_be16(&stored[12]);
+	loaded.eco_scan_period_s = sys_get_be16(&stored[14]);
+	loaded.mode = stored[16];
+	if (radio_params_validate(&loaded)) {
+		device_set_storage_fault(STORAGE_FAULT_RADIO_PARAMS, true);
+		return -EBADMSG;
 	}
-	device_set_storage_fault(STORAGE_FAULT_RADIO_PARAMS, err != 0);
-	return err;
+	params_radio = loaded;
+	device_set_storage_fault(STORAGE_FAULT_RADIO_PARAMS, false);
+	return 0;
 }
 
 int radio_params_save(void)
@@ -356,12 +517,12 @@ int radio_params_save(void)
 
 	sys_put_be16(params_radio.adv_interval_min, &stored[0]);
 	sys_put_be16(params_radio.adv_interval_max, &stored[2]);
-	sys_put_be16(params_radio.adv_interval_min_lowactivity, &stored[4]);
-	sys_put_be16(params_radio.adv_interval_max_lowactivity, &stored[6]);
+	sys_put_be16(params_radio.adv_interval_min_eco, &stored[4]);
+	sys_put_be16(params_radio.adv_interval_max_eco, &stored[6]);
 	sys_put_be16(params_radio.scan_interval, &stored[8]);
-	sys_put_be16(params_radio.scan_interval_lowactivity, &stored[10]);
-	sys_put_be16(params_radio.scan_window, &stored[12]);
-	sys_put_be16(params_radio.scan_window_lowactivity, &stored[14]);
+	sys_put_be16(params_radio.scan_window, &stored[10]);
+	sys_put_be16(params_radio.eco_scan_window, &stored[12]);
+	sys_put_be16(params_radio.eco_scan_period_s, &stored[14]);
 	stored[16] = params_radio.mode;
 
 	int err = param_storage_save(RADIO_PARAMS_STORAGE_KEY, stored,
@@ -381,6 +542,7 @@ static void evaluate_command_data(const uint8_t *data, uint8_t len)
 	led_command_begin();
 	network_command_begin();
 	radio_command_begin();
+	motion_command_begin();
 
 	for (uint8_t offset = 0; offset + 2 < len; offset += 3) {
 		uint8_t parameter = data[offset];
@@ -398,6 +560,9 @@ static void evaluate_command_data(const uint8_t *data, uint8_t len)
 		case P_BASE_RADIO:
 			radio_apply_command(parameter, value);
 			break;
+		case P_BASE_MOTION:
+			motion_apply_command(parameter, value);
+			break;
 		default:
 			printk("Unknown parameter base 0x%02x for parameter 0x%02x\n",
 			       parameter & P_BASE_MASK, parameter);
@@ -408,6 +573,7 @@ static void evaluate_command_data(const uint8_t *data, uint8_t len)
 	led_command_commit();
 	network_command_commit();
 	radio_command_commit();
+	motion_command_commit();
 
 }
 
@@ -517,42 +683,40 @@ void radio_schedule_status_update(void)
 
 static int radio_params_validate(const struct radio_params *params)
 {
-	if (params->mode != HIGH_ACTIVITY && params->mode != LOW_ACTIVITY) {
+	if (params->mode != HIGH_ACTIVITY && params->mode != ECO_ACTIVITY) {
 		return -EINVAL;
 	}
 
 	if (params->adv_interval_min == 0 ||
 	    params->adv_interval_max == 0 ||
-	    params->adv_interval_min_lowactivity == 0 ||
-	    params->adv_interval_max_lowactivity == 0 ||
+	    params->adv_interval_min_eco == 0 ||
+	    params->adv_interval_max_eco == 0 ||
 	    params->scan_interval == 0 ||
-	    params->scan_interval_lowactivity == 0 ||
 	    params->scan_window == 0 ||
-	    params->scan_window_lowactivity == 0) {
+	    params->eco_scan_window == 0 ||
+	    params->eco_scan_period_s == 0) {
 		return -EINVAL;
 	}
 
 	if (params->adv_interval_min > params->adv_interval_max ||
-	    params->adv_interval_min_lowactivity > params->adv_interval_max_lowactivity) {
+	    params->adv_interval_min_eco > params->adv_interval_max_eco) {
 		return -EINVAL;
 	}
 
 	if (!adv_interval_valid(params->adv_interval_min) ||
 	    !adv_interval_valid(params->adv_interval_max) ||
-	    !adv_interval_valid(params->adv_interval_min_lowactivity) ||
-	    !adv_interval_valid(params->adv_interval_max_lowactivity)) {
+	    !adv_interval_valid(params->adv_interval_min_eco) ||
+	    !adv_interval_valid(params->adv_interval_max_eco)) {
 		return -EINVAL;
 	}
 
 	if (!scan_interval_valid(params->scan_interval) ||
-	    !scan_interval_valid(params->scan_interval_lowactivity) ||
 	    !scan_interval_valid(params->scan_window) ||
-	    !scan_interval_valid(params->scan_window_lowactivity)) {
+	    !scan_interval_valid(params->eco_scan_window)) {
 		return -EINVAL;
 	}
 
-	if (params->scan_window > params->scan_interval ||
-	    params->scan_window_lowactivity > params->scan_interval_lowactivity) {
+	if (params->scan_window > params->scan_interval) {
 		return -EINVAL;
 	}
 
@@ -564,14 +728,12 @@ static bool radio_params_equal(const struct radio_params *a,
 {
 	return a->adv_interval_min == b->adv_interval_min &&
 	       a->adv_interval_max == b->adv_interval_max &&
-	       a->adv_interval_min_lowactivity ==
-		       b->adv_interval_min_lowactivity &&
-	       a->adv_interval_max_lowactivity ==
-		       b->adv_interval_max_lowactivity &&
+	       a->adv_interval_min_eco == b->adv_interval_min_eco &&
+	       a->adv_interval_max_eco == b->adv_interval_max_eco &&
 	       a->scan_interval == b->scan_interval &&
-	       a->scan_interval_lowactivity == b->scan_interval_lowactivity &&
 	       a->scan_window == b->scan_window &&
-	       a->scan_window_lowactivity == b->scan_window_lowactivity &&
+	       a->eco_scan_window == b->eco_scan_window &&
+	       a->eco_scan_period_s == b->eco_scan_period_s &&
 	       a->mode == b->mode;
 }
 
@@ -621,59 +783,6 @@ static int scan_ms_to_units(uint16_t milliseconds, uint16_t *units)
 
 	*units = (uint16_t)converted;
 	return 0;
-}
-
-/* Advertising is required. Scan failures are degraded mode and are exposed
- * through the radio status byte.
- */
-static uint8_t update_ble_params(struct bt_le_scan_param *parameters_scan, struct bt_le_adv_param *parameters_adv)
-{
-	int err;
-	uint8_t errors = 0;
-	bool status_changed = false;
-
-	k_mutex_lock(&radio_operation_lock, K_FOREVER);
-
-	err = bt_le_adv_stop();
-	if (err && err != -EALREADY) {
-		printk("Advertising stop before parameter update failed (err %d)\n", err);
-		errors |= BLE_UPDATE_ADV_ERROR;
-	}
-
-	err = bt_le_scan_stop();
-	if (err && err != -EALREADY) {
-		printk("Scan stop before parameter update failed (err %d)\n", err);
-		radio_status_set_local(RADIO_STATUS_SCAN_RUNTIME_ERROR, true);
-		status_changed = true;
-		errors |= BLE_UPDATE_SCAN_ERROR;
-	}
-
-	err = bt_le_adv_start(parameters_adv, ad, ARRAY_SIZE(ad), NULL, 0);
-	if (err && err != -EALREADY) {
-		printk("Advertising parameter update failed (err %d)\n", err);
-		errors |= BLE_UPDATE_ADV_ERROR;
-	}
-
-	err = bt_le_scan_start(parameters_scan, scan_cb);
-	if (err && err != -EALREADY) {
-		printk("Scan parameter update failed (err %d)\n", err);
-		radio_status_set_local(RADIO_STATUS_SCAN_RUNTIME_ERROR, true);
-		status_changed = true;
-		errors |= BLE_UPDATE_SCAN_ERROR;
-	} else {
-		radio_status_set_local(RADIO_STATUS_SCAN_RUNTIME_ERROR, false);
-		status_changed = true;
-	}
-
-	if (status_changed && !(errors & BLE_UPDATE_ADV_ERROR)) {
-		err = adv_update_locked();
-		if (err) {
-			errors |= BLE_UPDATE_STATUS_ERROR;
-		}
-	}
-
-	k_mutex_unlock(&radio_operation_lock);
-	return errors;
 }
 
 static int scan_init(void)
@@ -751,31 +860,6 @@ static void adv_prepare_status_data(void)
 	mfg_data[ADV_POS_NETWORK_STATUS] = device_get_network_status();
 }
 
-void set_ble_params(struct radio_params *params)
-{
-	scan_params.type = BT_LE_SCAN_TYPE_PASSIVE;
-	scan_params.options = BT_LE_SCAN_OPT_FILTER_ACCEPT_LIST;
-	switch(params->mode)
-			{
-				case LOW_ACTIVITY:
-				{
-				    adv_params.interval_min   = params->adv_interval_min_lowactivity;
-					adv_params.interval_max   = params->adv_interval_max_lowactivity;
-				    scan_params.interval = params->scan_interval_lowactivity;
-				    scan_params.window = params->scan_window_lowactivity;
-					break;
-				}
-				case HIGH_ACTIVITY:
-				{
-					adv_params.interval_min   = params->adv_interval_min;
-					adv_params.interval_max   = params->adv_interval_max;
-					scan_params.interval = params->scan_interval;
-					scan_params.window = params->scan_window;
-				    break;
-				}
-			}
-}
-
 int radio_init(void)
 {
   	int err;
@@ -820,36 +904,25 @@ int radio_init(void)
 	return 0;
 }
 
+/* Advertising is required; scan failures are degraded mode, tolerated and
+ * exposed through the radio status byte.
+ */
 int radio_start(void)
 {
-    int err;
+	uint8_t update_errors;
 
 	k_mutex_lock(&radio_operation_lock, K_FOREVER);
-	set_ble_params(&params_radio);
-	/* Start advertising */
-	err = bt_le_adv_start(&adv_params, ad, ARRAY_SIZE(ad),
-				      NULL, 0);
-	if (err) {
-		printk("Advertising failed to start (err %d)\n", err);
-		k_mutex_unlock(&radio_operation_lock);
-		return err;
-	}
-
-	
-	err = bt_le_scan_start(&scan_params, scan_cb);
-	if (err) {
-		printk("Starting scanning failed (err %d), entering advertising-only degraded mode\n", err);
-		radio_status_set_local(RADIO_STATUS_SCAN_RUNTIME_ERROR, true);
-		(void)adv_update_locked();
-		k_mutex_unlock(&radio_operation_lock);
-		return 0;  // Scan failure is tolerated; advertising-only operation is intentional.
-	}
-
-	radio_status_set_local(RADIO_STATUS_SCAN_RUNTIME_ERROR, false);
-	(void)adv_update_locked();
-
+	update_errors = radio_apply_mode_locked(params_radio.mode);
 	k_mutex_unlock(&radio_operation_lock);
-    return 0;
+
+	if (update_errors & BLE_UPDATE_ADV_ERROR) {
+		printk("Advertising failed to start\n");
+		return -EIO;
+	}
+	if (update_errors & BLE_UPDATE_SCAN_ERROR) {
+		printk("Starting scanning failed, entering advertising-only degraded mode\n");
+	}
+	return 0;
 }
 
 

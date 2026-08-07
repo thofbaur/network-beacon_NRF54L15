@@ -8,6 +8,10 @@
 - `device.c` owns identity lookup and shared status-byte access.
 - `param_storage.c` stays a generic persistence wrapper.
 - `shared/common_include.h` is the shared protocol constant boundary.
+- `motion.c` owns the accelerometer and inactivity-triggered energy
+  conservation policy; it does not own radio or LED hardware.
+- `eco_log.c` owns eco session history (RAM ring, flash, export), mirroring
+  `self_report.c`'s shape; it does not decide when eco mode starts or ends.
 
 # Architecture
 
@@ -44,6 +48,24 @@ The LED domain owns GPIO setup and visible LED behavior. Other modules should no
 ## Storage
 
 The storage domain is intentionally generic. It should not know parameter meaning, defaults, validation, or reset behavior.
+
+## Motion
+
+The motion domain owns the accelerometer and inactivity-triggered energy
+conservation policy. It calls into the radio and LED domains through small,
+non-persisted entry points (`radio_set_eco_override`, `led_suspend_blinking`/
+`led_resume_blinking`) rather than owning that hardware itself, and must not
+overwrite the user's stored radio/LED preferences.
+
+## Eco Log
+
+The eco log domain owns eco session history: a RAM ring of paired
+enter/leave timestamps, flushed to its own flash partition, and exported
+over NUS — structurally identical to how `self_report.c`/
+`self_report_storage.c` handle self-reports. It does not decide when a
+session starts or ends; `radio.c` detects real mode transitions (from
+either trigger: the manual `P_SET_RAD_ACTIVE` command or motion.c's
+override) and calls `eco_log_enter`/`eco_log_leave`.
 
 ## Protocol Constants
 

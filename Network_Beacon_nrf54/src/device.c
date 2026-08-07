@@ -79,7 +79,8 @@ void device_set_storage_fault(uint32_t fault, bool active)
 				    (faults & STORAGE_FAULT_CONTACT_MASK) != 0);
 	device_set_radio_status_bit(STORAGE_STATUS_META_ERROR,
 				    (faults & (STORAGE_FAULT_CONTACT_META |
-					       STORAGE_FAULT_SELF_REPORT_META)) != 0);
+					       STORAGE_FAULT_SELF_REPORT_META |
+					       STORAGE_FAULT_ECO_LOG_META)) != 0);
 
 	if (device_get_radio_status() != previous) {
 		radio_schedule_status_update();

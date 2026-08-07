@@ -14,6 +14,8 @@ This firmware is a DSA network beacon for Zephyr/NCS on nRF54. It advertises its
 | NUS | `src/nus.c`, `src/nus.h` | Own the data export interface. |
 | Device | `src/device.c`, `src/device.h`, `src/radio_ids.h` | Own device identity and shared status bytes. |
 | LED | `src/led.c`, `src/led.h` | Own user-visible LED behavior. |
+| Motion | `src/motion.c`, `src/motion.h` | Own the accelerometer and inactivity-triggered energy conservation policy. |
+| Eco log | `src/eco_log.c`, `src/eco_log_storage.c` | Own eco session (enter/leave) history: RAM ring, flash, and export. |
 | Storage | `src/param_storage.c`, `src/param_storage.h` | Provide generic persistence only. |
 | Protocol constants | `src/defines.h` | Centralize shared command IDs and packet flags. |
 | Platform/build | `CMakeLists.txt`, `prj.conf`, `boards/` | Configure Zephyr, Bluetooth, storage, GPIO, and board support. |
@@ -35,6 +37,8 @@ This firmware is a DSA network beacon for Zephyr/NCS on nRF54. It advertises its
 - NUS request/response behavior: `src/nus.c`.
 - Identity mappings and status-byte access: `src/device.c` and `src/radio_ids.h`.
 - LED behavior: `src/led.c`.
+- Accelerometer/inactivity/energy-conservation policy: `src/motion.c`.
+- Eco session history storage/export: `src/eco_log.c`, `src/eco_log_storage.c`.
 - Shared command IDs and protocol flags: `src/defines.h`.
 - Generic storage plumbing only: `src/param_storage.c`.
 - Boot sequencing only: `src/main.c`.
@@ -45,6 +49,13 @@ There is no dedicated unit test suite yet. The minimum check for code changes is
 
 ```powershell
 west build -b nrf54l15dk/nrf54l15/cpuapp/ns -d build_debug --sysbuild .
+```
+
+The DK has no accelerometer; motion.c degrades gracefully there. To
+exercise inactivity detection, build for the actual tag hardware instead:
+
+```powershell
+west build -b nrf54l15tag/nrf54l15/cpuapp/ns -d build --sysbuild .
 ```
 
 For incremental rebuilds:

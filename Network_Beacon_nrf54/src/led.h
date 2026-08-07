@@ -5,6 +5,8 @@
 
 void led_init(void);
 void led_signal_self_report(void);
+void led_suspend_blinking(void);
+void led_resume_blinking(void);
 void led_command_begin(void);
 void led_apply_command(uint8_t parameter, uint16_t value);
 void led_command_commit(void);

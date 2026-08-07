@@ -65,3 +65,148 @@ Battery voltage is sampled periodically and cached. NUS status responses report
 the cached voltage instead of reading ADC during transfer. The advertised
 network status byte keeps contact data level in bits 3..0 and carries battery
 status in bits 7..4.
+
+## 2026-08-05: Energy Conservation Bit Narrows Battery Status To 3 Bits
+
+`BATTERY_LEVEL_MASK` moves from bits 7..4 to bits 6..4. Battery status only
+ever takes values 0-3, so the narrower field loses no range. Bit 7 becomes
+`ECO_MODE_MASK`, reporting whether the device is in inactivity-triggered
+energy conservation mode. This is a protocol/advertised-data compatibility
+change: any receiver that masked the network status byte with the old
+`0xF0` for battery status must update to `0x70`.
+
+## 2026-08-05: Inactivity Detection Overrides Radio/LED Without Persisting
+
+A new `motion` domain (`src/motion.c`) watches the onboard ADXL367
+accelerometer and, after a configurable period with no activity interrupt,
+forces the tag into energy conservation mode: `radio_set_eco_override()`
+temporarily forces `LOW_ACTIVITY` radio behavior and `led_suspend_blinking()`
+stops the status LED. Both are non-persisted overrides layered on top of the
+user's stored radio/LED preferences (`params_radio.mode`, `params_led`) —
+they never call `radio_params_save()`/`led_params_save()`. Motion resuming
+reverts to whatever the user had stored, not necessarily to `HIGH_ACTIVITY`.
+The inactivity timeout itself is implemented as a software timer reset by
+the accelerometer's hardware activity interrupt, rather than the ADXL367's
+own inactivity register, so the configurable timeout isn't bounded by the
+sensor's sample-count register width. Energy conservation state is not
+persisted across reset; every boot starts active and re-evaluates from
+there.
+
+## 2026-08-07: Energy Conservation Keeps Normal Advertising, Duty-Cycles Scanning
+
+Energy conservation mode no longer reuses `LOW_ACTIVITY` radio parameters.
+Advertising keeps the normal (high-activity) interval throughout; only
+scanning is reduced, on a much longer period (`CONFIG_DSA_ECO_SCAN_INTERVAL_MS`,
+default 300 s) than the BLE scan-interval field can express (max ~10.24 s
+per the Core spec). This is implemented as periodic application-triggered
+scan bursts — `bt_le_scan_start`/`stop` toggled by a delayable work item in
+`radio.c` — rather than a single `bt_le_scan_param`, since scanning is the
+dominant power cost at any duty cycle above roughly 0.01%: a scan window
+holds the receiver active for its full duration, while an advertising
+event is a sub-millisecond burst regardless of interval. The
+manually-selectable `LOW_ACTIVITY` radio command mode is unchanged by this;
+only the automatic inactivity-triggered override behaves differently now.
+
+## 2026-08-07: Development LED Indicator For Energy Conservation Mode
+
+`CONFIG_DSA_DEV_ECO_LED_INDICATOR` (default `y`) makes `led_suspend_blinking()`
+light the onboard blue LED solid instead of turning the status LED off while
+in energy conservation mode, so the mode is visible on the bench. This works
+against the point of energy conservation (an LED left on draws more power
+than one that's off) and must be disabled before release; it's grouped with
+the other `DSA_DEV_*` flags for that reason. The indicator LED
+(`led1_blue`) degrades gracefully when a board doesn't provide it, unlike
+the status/self-report LEDs which are required.
+
+## 2026-08-07: Low-Activity Radio Mode Fully Replaced By Eco Mode
+
+`LOW_ACTIVITY` is retired; `ECO_ACTIVITY` is now the only reduced-power
+radio mode, for both triggers:
+
+- **Manual and persisted**: `P_SET_RAD_ACTIVE` still exists and still
+  persists via `radio_params_save()`, but now selects `HIGH_ACTIVITY` or
+  `ECO_ACTIVITY` directly — a user can permanently put the tag in eco mode
+  over BLE, independent of motion detection.
+- **Automatic and temporary**: `motion.c`'s `radio_set_eco_override()` still
+  layers a non-persisted override on top of whichever mode is stored,
+  exactly as before, just renamed.
+
+Both paths now funnel through one function, `radio_apply_mode_locked()` in
+`radio.c`, which knows how to start/stop the eco scan-burst cycle
+(`eco_scan_handler`) as well as the advertising restart — the two
+mechanisms can no longer diverge in how "eco" is actually implemented,
+unlike the old design where `set_ble_params()`/`update_ble_params()`
+handled the persisted-mode path and a separate bespoke block in
+`radio_set_eco_override()` handled the motion-triggered path.
+
+**Protocol renames** in `shared/common_include.h`:
+
+- `P_ADV_INTERVAL_LOWACTIVITY_MS` → `P_ADV_INTERVAL_ECO_MS` (same ID, same
+  ms/BLE-unit semantics — kept runtime-adjustable and independent from the
+  normal advertising interval per explicit request, even though its
+  default now equals the normal interval rather than a slow ~10s rate).
+- `P_SCAN_WINDOW_LOWACTIVITY_MS` → `P_ECO_SCAN_WINDOW_MS` (same ID, same
+  semantics: the burst duration).
+- `P_SCAN_INTERVAL_LOWACTIVITY_MS` is **retired, not renamed** — replaced by
+  a new `P_ECO_SCAN_PERIOD_S` (a different ID, `P_BASE_RADIO + 7`). The old
+  parameter was a millisecond BLE scan-interval value (max ~10.24 s); the
+  new one is a plain-seconds burst period with no such ceiling, so reusing
+  the old ID with new semantics would silently misinterpret any external
+  tooling still sending the old format. Do not reuse `P_BASE_RADIO + 4`.
+
+**Storage**: `radio_params` persists under a new key, `"dsa/radio2"`
+(was `"dsa/radio"`), because the struct's field semantics changed at the
+same byte length — reusing the old key would silently misinterpret
+previously-stored bytes rather than falling back to defaults. Any
+device already flashed with the old firmware starts fresh on radio
+parameters after this update.
+
+**Kconfig renames**: `DSA_LOW_ACTIVITY_ADV_INTERVAL_MIN/MAX_MS` →
+`DSA_ECO_ADV_INTERVAL_MIN/MAX_MS` (defaults changed from ~10s to match the
+high-activity defaults, 90/120 ms, per explicit request — advertising is
+not reduced in eco mode by default, but remains independently
+configurable). `DSA_LOW_ACTIVITY_SCAN_WINDOW_MS` → `DSA_ECO_SCAN_WINDOW_MS`
+(default unchanged, 100 ms). `DSA_LOW_ACTIVITY_SCAN_INTERVAL_MS` is
+removed with no replacement Kconfig default of its own; the equivalent
+concept is `DSA_ECO_SCAN_INTERVAL_MS` (already introduced 2026-08-07,
+default 300 s), which seeds `params_radio.eco_scan_period_s` in
+`set_radio_params_init()`.
+
+## 2026-08-07: Eco Session History Logged As Paired Enter/Leave Records
+
+A new `eco_log` domain (`src/eco_log.c`, `src/eco_log_storage.c`) records
+when the tag enters and leaves eco mode, structurally identical to
+`self_report.c`/`self_report_storage.c` (RAM ring, own flash partition,
+NUS export) but with a 6-byte paired entry — `[enter_time(3B),
+leave_time(3B)]`, each the low 24 bits of uptime seconds, matching the
+existing self-report/contact timestamp convention — instead of a single
+timestamp.
+
+A record is written only when a session **completes** (on leaving eco
+mode), once both timestamps are known, rather than as two independent
+immediate events. This was an explicit choice over logging enter and leave
+as separate momentary events (which would match self-report's pattern
+more closely and survive a reset mid-session): a paired record is directly
+useful as a session duration without reconstruction, at the cost that a
+session still in progress at reset is never recorded.
+
+`radio.c` is the sole writer: `radio_apply_mode_locked()` — the single
+function both the manual `P_SET_RAD_ACTIVE` command and motion.c's
+override funnel through — tracks the last mode it actually applied and
+calls `eco_log_enter()`/`eco_log_leave()` only on a real transition. This
+means the log reflects actual radio behavior regardless of which trigger
+caused it, not just motion-triggered eco specifically.
+
+New NUS packet flag `DSA_NUS_FLAG_ECO_LOG` (0x07). `nus.c`'s
+`send_eco_log()` mirrors `send_self_reports()` exactly and is sent in the
+same transfer, after self-reports and before contact data.
+
+New flash partition `eco_log_storage` (0x2000 bytes, matching
+`CONFIG_DSA_ECO_LOG_FLASH_SIZE_BYTES`) added to `pm_static.yml`, growing
+`nonsecure_storage` accordingly. New storage-fault bits
+`STORAGE_FAULT_ECO_LOG_*` (BIT 13-17) added to `device.h`, folded into the
+existing `STORAGE_FAULT_CONTACT_MASK`/`STORAGE_STATUS_CONTACT_ERROR` and
+`STORAGE_STATUS_META_ERROR` — matching the same (already-deferred)
+conflation of contact/self-report storage faults under one status bit,
+rather than introducing a third inconsistency in a system already
+scheduled for a status-reporting redesign.

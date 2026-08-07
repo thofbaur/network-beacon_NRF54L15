@@ -16,6 +16,7 @@
 #include "nus.h"
 #include "battery_voltage.h"
 #include "common_include.h"
+#include "eco_log.h"
 #include "network.h"
 #include "self_report.h"
 
@@ -484,6 +485,88 @@ static int send_self_reports(struct bt_conn *conn)
 	return 0;
 }
 
+static int send_eco_log(struct bt_conn *conn)
+{
+	int err;
+	int sync_err;
+	int64_t retry_deadline;
+	uint16_t max_payload = bt_gatt_get_mtu(conn);
+	uint16_t payload_len;
+	uint16_t entry_payload_len;
+	uint16_t bytes_written;
+	uint16_t entries_sent = 0;
+	uint8_t buffer[NUS_MAX_PAYLOAD_LEN];
+
+	if (max_payload > NUS_ATT_NOTIFY_HEADER_LEN) {
+		max_payload -= NUS_ATT_NOTIFY_HEADER_LEN;
+	} else {
+		max_payload = 0;
+	}
+
+	payload_len = MIN(max_payload, (uint16_t)sizeof(buffer));
+	if (payload_len <= 1) {
+		return -EMSGSIZE;
+	}
+
+	entry_payload_len = payload_len - 1;
+	entry_payload_len -= entry_payload_len % ECO_LOG_ENTRY_SIZE;
+	if (entry_payload_len == 0) {
+		return -EMSGSIZE;
+	}
+
+	do {
+		buffer[0] = DSA_NUS_FLAG_ECO_LOG;
+		retry_deadline = k_uptime_get() + NUS_STORAGE_BUSY_TIMEOUT_MS;
+		do {
+			err = eco_log_export_begin(
+				&buffer[1], entry_payload_len, &bytes_written);
+			if (err != -EBUSY) {
+				break;
+			}
+			if (!nus_connection_ready(conn)) {
+				return -ENOTCONN;
+			}
+			k_sleep(K_MSEC(NUS_STORAGE_BUSY_RETRY_MS));
+		} while (k_uptime_get() < retry_deadline);
+		if (err) {
+			printk("Failed to reserve eco log entries (err %d)\n", err);
+			return err;
+		}
+		if (bytes_written == 0) {
+			break;
+		}
+
+		err = nus_send_confirmed(conn, buffer, bytes_written + 1);
+		if (err) {
+			printk("Failed to send NUS eco log (err %d)\n", err);
+			eco_log_export_abort();
+			sync_err = eco_log_sync_storage();
+			if (sync_err) {
+				printk("Failed to checkpoint eco log storage (err %d)\n",
+				       sync_err);
+			}
+			return err;
+		}
+
+		err = eco_log_export_commit();
+		if (err) {
+			printk("Failed to commit sent eco log entries (err %d)\n", err);
+			return err;
+		}
+		entries_sent += bytes_written / ECO_LOG_ENTRY_SIZE;
+	} while (bytes_written > 0);
+
+	sync_err = eco_log_sync_storage();
+	if (sync_err) {
+		printk("Failed to checkpoint eco log storage (err %d)\n",
+		       sync_err);
+		return sync_err;
+	}
+
+	printk("Sent %u eco log entrie(s)\n", entries_sent);
+	return 0;
+}
+
 
 static void nus_received(struct bt_conn *conn, const uint8_t *const data, uint16_t len)
 {
@@ -551,7 +634,13 @@ static void transfer_work_handler(struct k_work *work)
 	if (err) {
 		goto transfer_failed;
 	}
-	
+
+	err = send_eco_log(conn);
+	if (err) {
+		goto transfer_failed;
+	}
+	printk("Sent eco log\n");
+
 	printk("Starting sending data\n");
 	err = send_networkdata(conn);
 	if (err) {

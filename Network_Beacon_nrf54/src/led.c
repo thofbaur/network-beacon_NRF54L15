@@ -34,8 +34,24 @@
 #error "Board must provide led1_red or led1"
 #endif
 
+/* Optional: a solid indicator LED for energy conservation mode. Not every
+ * board has a third LED color, so this degrades gracefully instead of
+ * requiring it like the two LEDs above.
+ */
+#if DT_NODE_HAS_STATUS(DT_NODELABEL(led1_blue), okay)
+#define MOTION_ECO_LED_NODE DT_NODELABEL(led1_blue)
+#define MOTION_ECO_LED_PRESENT 1
+#else
+#define MOTION_ECO_LED_PRESENT 0
+#endif
+
 BUILD_ASSERT(!DT_SAME_NODE(SELF_REPORT_LED_NODE, LED_NODE),
 	     "Status and self-report LEDs must be separate");
+#if MOTION_ECO_LED_PRESENT
+BUILD_ASSERT(!DT_SAME_NODE(MOTION_ECO_LED_NODE, LED_NODE) &&
+	     !DT_SAME_NODE(MOTION_ECO_LED_NODE, SELF_REPORT_LED_NODE),
+	     "Energy-conservation indicator LED must be separate");
+#endif
 BUILD_ASSERT(CONFIG_DSA_LED_BLINK_INTERVAL_MS % 1000 == 0,
 	     "Default status LED interval must use whole seconds");
 
@@ -53,6 +69,10 @@ static const struct gpio_dt_spec self_report_led =
 static bool led_ready;
 static bool led_on;
 static bool self_report_led_ready;
+#if MOTION_ECO_LED_PRESENT
+static const struct gpio_dt_spec eco_led = GPIO_DT_SPEC_GET(MOTION_ECO_LED_NODE, gpios);
+static bool eco_led_ready;
+#endif
 
 static void led_blink_handler(struct k_work *work);
 static void led_self_report_handler(struct k_work *work);
@@ -101,6 +121,17 @@ static int self_report_led_set(bool on)
 	return gpio_pin_set_dt(&self_report_led, on ? 1 : 0);
 }
 
+#if MOTION_ECO_LED_PRESENT
+static int eco_led_set(bool on)
+{
+	if (!eco_led_ready) {
+		return -ENODEV;
+	}
+
+	return gpio_pin_set_dt(&eco_led, on ? 1 : 0);
+}
+#endif
+
 static void led_schedule_next_blink(void)
 {
 	if (led_ready && params_led.led_active) {
@@ -113,6 +144,34 @@ static void led_stop_blinking(void)
 {
 	k_work_cancel_delayable(&led_blink_work);
 	led_set(false);
+}
+
+/* Temporary, non-persisted suspend/resume for automatic energy-conservation
+ * triggers. Does not touch params_led or go through led_params_save().
+ *
+ * CONFIG_DSA_DEV_ECO_LED_INDICATOR keeps a solid LED lit instead of off
+ * while conserving energy, as a development-time visual aid. It works
+ * against the point of energy conservation and should be off for
+ * production builds.
+ */
+void led_suspend_blinking(void)
+{
+	led_stop_blinking();
+#if MOTION_ECO_LED_PRESENT
+	if (IS_ENABLED(CONFIG_DSA_DEV_ECO_LED_INDICATOR)) {
+		eco_led_set(true);
+	}
+#endif
+}
+
+void led_resume_blinking(void)
+{
+#if MOTION_ECO_LED_PRESENT
+	if (IS_ENABLED(CONFIG_DSA_DEV_ECO_LED_INDICATOR)) {
+		eco_led_set(false);
+	}
+#endif
+	led_schedule_next_blink();
 }
 
 static void led_blink_handler(struct k_work *work)
@@ -180,6 +239,27 @@ static void self_report_led_gpio_init(void)
 	self_report_led_ready = true;
 }
 
+#if MOTION_ECO_LED_PRESENT
+static void eco_led_gpio_init(void)
+{
+	int err;
+
+	if (!device_is_ready(eco_led.port)) {
+		printk("Energy-conservation indicator LED GPIO device not ready\n");
+		return;
+	}
+
+	err = gpio_pin_configure_dt(&eco_led, GPIO_OUTPUT_INACTIVE);
+	if (err) {
+		printk("Energy-conservation indicator LED configure failed (err %d)\n",
+		       err);
+		return;
+	}
+
+	eco_led_ready = true;
+}
+#endif
+
 void led_init(void)
 {
 	int err;
@@ -194,6 +274,9 @@ void led_init(void)
 
 	led_gpio_init();
 	self_report_led_gpio_init();
+#if MOTION_ECO_LED_PRESENT
+	eco_led_gpio_init();
+#endif
 }
 
 void led_signal_self_report(void)

@@ -41,6 +41,16 @@ config DSA_DEV_SYNTHETIC_SELF_REPORT_COUNT
 	  self-report generation is enabled. Ignored when synthetic self reports
 	  are disabled.
 
+config DSA_DEV_ECO_LED_INDICATOR
+	bool "Light a solid LED during energy conservation mode"
+	default y
+	help
+	  Keep an LED lit instead of off while inactivity detection has put
+	  the device into energy conservation mode, so the mode is visible
+	  during development. This works against the point of energy
+	  conservation by keeping an LED powered. Keep this disabled for
+	  production firmware.
+
 endmenu
 
 menu "DSA LED behavior"
@@ -132,29 +142,44 @@ config DSA_SCAN_INTERVAL_MS
 	default 10000
 	range 3 10240
 
-config DSA_LOW_ACTIVITY_ADV_INTERVAL_MIN_MS
-	int "Low-activity minimum advertising interval in milliseconds"
-	default 10000
+config DSA_ECO_ADV_INTERVAL_MIN_MS
+	int "Energy-conservation minimum advertising interval in milliseconds"
+	default 90
+	range 20 10240
+	help
+	  Advertising is not reduced in energy conservation mode by default;
+	  this matches the high-activity interval but can be changed
+	  independently later.
+
+config DSA_ECO_ADV_INTERVAL_MAX_MS
+	int "Energy-conservation maximum advertising interval in milliseconds"
+	default 120
 	range 20 10240
 
-config DSA_LOW_ACTIVITY_ADV_INTERVAL_MAX_MS
-	int "Low-activity maximum advertising interval in milliseconds"
-	default 10100
-	range 20 10240
-
-config DSA_LOW_ACTIVITY_SCAN_WINDOW_MS
-	int "Low-activity scan window in milliseconds"
+config DSA_ECO_SCAN_WINDOW_MS
+	int "Energy-conservation scan burst duration in milliseconds"
 	default 100
 	range 3 10240
-
-config DSA_LOW_ACTIVITY_SCAN_INTERVAL_MS
-	int "Low-activity scan interval in milliseconds"
-	default 10000
-	range 3 10240
+	help
+	  How long each periodic scan burst listens for, while inactivity
+	  detection has the device in energy conservation mode.
 
 config DSA_RADIO_DEFAULT_HIGH_ACTIVITY
 	bool "Start in high-activity radio mode by default"
 	default y
+
+config DSA_ECO_SCAN_INTERVAL_MS
+	int "Energy-conservation scan burst period in milliseconds"
+	default 300000
+	range 1000 3600000
+	help
+	  Period between scan bursts while inactivity detection has the
+	  device in energy conservation mode. Advertising keeps its own
+	  (usually normal-rate) interval in this mode; only scanning is
+	  duty-cycled. This value exceeds what the BLE scan-interval field
+	  can express (max ~10.24 s), so it is implemented as periodic
+	  application-triggered scan bursts (each DSA_ECO_SCAN_WINDOW_MS
+	  long) rather than a single scan parameter.
 
 endmenu
 
@@ -164,6 +189,55 @@ config DSA_NUS_IDLE_TIMEOUT_MS
 	int "NUS connection idle timeout in milliseconds"
 	default 20000
 	range 1000 600000
+
+endmenu
+
+menu "DSA inactivity detection"
+
+config DSA_MOTION_DEFAULT_ACTIVE
+	bool "Enable inactivity-based energy conservation by default"
+	default y
+
+config DSA_MOTION_INACTIVITY_TIMEOUT_S
+	int "Default inactivity timeout before energy conservation mode, in seconds"
+	default 900
+	range 1 65535
+
+endmenu
+
+menu "DSA eco log storage"
+
+config DSA_ECO_LOG_RING_COUNT
+	int "Eco session entries held in RAM"
+	default 64
+	range 1 65535
+
+config DSA_ECO_LOG_FLUSH_THRESHOLD
+	int "Eco log RAM flush threshold"
+	default 32
+	range 2 65535
+	help
+	  Start moving the oldest eco sessions to flash when this many
+	  sessions are buffered in RAM.
+
+config DSA_ECO_LOG_FLASH_SIZE_BYTES
+	hex "Eco log flash partition size in bytes"
+	default 0x2000
+	help
+	  Size of the fixed flash partition reserved for the eco log. The
+	  partition must contain at least two complete flash sectors.
+
+config DSA_ECO_LOG_FLUSH_BATCH
+	int "Eco sessions written per flash block"
+	default 16
+	range 1 64
+
+config DSA_ECO_LOG_FLUSH_RETRY_MS
+	int "Eco log flash retry delay in milliseconds"
+	default 5000
+	range 100 60000
+	help
+	  Delay before retrying a failed eco log flash write.
 
 endmenu
 

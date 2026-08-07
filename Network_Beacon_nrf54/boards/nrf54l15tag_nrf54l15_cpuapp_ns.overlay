@@ -1,0 +1,19 @@
+/*
+ * Wire up the onboard ADXL367 activity interrupt for inactivity detection.
+ * The node itself (bus, address, status) is already provided by the
+ * nrf54l15tag board files; this overlay only adds what they leave out.
+ *
+ * int1-gpios matches Nordic's own Fast Pair locator_tag reference overlay
+ * for this exact board (nrf/samples/bluetooth/fast_pair/locator_tag).
+ */
+
+/ {
+	aliases {
+		motion-detector = &adxl367;
+	};
+};
+
+&adxl367 {
+	int1-gpios = <&gpio0 3 0>;
+	odr = <1>; /* 25 Hz */
+};

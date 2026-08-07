@@ -205,7 +205,7 @@ static bool should_connect_to_adv(const struct dsa_adv *adv)
 		(adv->network_status & DATA_LEVEL_MASK) >> P_SHIFT_STATUS_DATA;
 
 	return adv->name_match && adv->manufacturer_match &&
-	       (readout_level >= READOUT_LEVEL);
+	       (readout_level >= CONFIG_DSA_READOUT_LEVEL);
 }
 
 static void scan_recv(const struct bt_le_scan_recv_info *info,
