@@ -2,8 +2,9 @@
 
 ## What it does
 
-This tool finds the BLE addresses of new/unlabeled DSA tags before you enroll
-them in `Network_Beacon_nrf54/src/radio_ids.c`. It has two parts:
+This tool finds the BLE addresses of new/unlabeled DSA tags and turns them
+into ready-to-paste entries for
+`Network_Beacon_nrf54/src/radio_ids.c`. It has three parts:
 
 - **Firmware** (`src/main.c`): runs on an nRF54L15 DK. It continuously
   scans for BLE advertisements (never connects), checks the advertised
@@ -15,6 +16,11 @@ them in `Network_Beacon_nrf54/src/radio_ids.c`. It has two parts:
   serial port, and appends each newly seen device to a timestamped CSV file
   (`tag_adresses_<timestamp>.csv`) with columns `name, addr1..addr6`.
   Duplicate addresses seen again in the same session are ignored.
+- **ID generator** (`generate_ids.py`): reads every `tag_adresses_*.csv`
+  file in this directory (so it can combine multiple logging sessions),
+  drops duplicate addresses across all of them, and writes `ids.c`
+  containing one `known_device_table`-style block per unique tag, with
+  address bytes reversed and `.id` values assigned sequentially.
 
 ## Install
 
@@ -49,10 +55,19 @@ python -m pip install pyserial
 
 4. Power on / bring the target tags into range. Each new match prints to the
    console and is appended to the CSV as it's found. Stop with Ctrl+C.
-5. Use the addresses from the CSV to populate
-   `Network_Beacon_nrf54/src/radio_ids.c` (`known_device_table`), per
-   `Production_HowTo.md` — note addresses there are entered in reverse
-   byte order.
+5. Once you're done logging (across one or more sessions/CSV files), generate
+   the `ids.c` blocks. `--start-id` sets the ID of the first entry (default
+   `1`); pick a value that doesn't collide with IDs already used in
+   `radio_ids.c`:
+
+   ```powershell
+   python generate_ids.py --start-id 5
+   ```
+
+6. Copy the generated blocks from `ids.c` into the `known_device_table`
+   array in `Network_Beacon_nrf54/src/radio_ids.c`, per
+   `Production_HowTo.md`. Replace the CSV-derived `// <name>` comments with
+   something identifying the physical tag if useful.
 
 Optionally, open an RTT console to the DK to see log messages
 (`Bluetooth initialized`, `Scanning for advertisements`, `Match: ...`).
