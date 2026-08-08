@@ -5,6 +5,7 @@ over UART and log newly seen devices to a timestamped CSV file.
 Requires pyserial: pip install pyserial
 """
 
+import argparse
 import csv
 import datetime
 import os
@@ -13,7 +14,6 @@ import sys
 
 import serial
 
-PORT = "COM11"
 BAUDRATE = 115200
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -24,7 +24,18 @@ LINE_RE = re.compile(
 )
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "-p", "--port", default="COM11", help="Serial port to listen on (default: COM11)"
+    )
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
+    port = args.port
+
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     csv_path = os.path.join(SCRIPT_DIR, f"tag_adresses_{timestamp}.csv")
 
@@ -36,8 +47,8 @@ def main():
         writer.writerow(CSV_HEADER)
         csv_file.flush()
 
-        with serial.Serial(PORT, BAUDRATE, timeout=1) as ser:
-            print(f"Listening on {PORT} at {BAUDRATE} baud, logging to {csv_path}")
+        with serial.Serial(port, BAUDRATE, timeout=1) as ser:
+            print(f"Listening on {port} at {BAUDRATE} baud, logging to {csv_path}")
 
             while True:
                 raw = ser.readline()
