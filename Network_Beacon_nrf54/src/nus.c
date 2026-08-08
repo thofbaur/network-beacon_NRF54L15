@@ -30,6 +30,8 @@
 #define NUS_CONTACT_COUNT_SIZE 3U
 #define NUS_CONTACT_COUNT_MAX 0x00ffffffU
 #define NUS_DATA_PACKET_HEADER_SIZE 2U
+#define NUS_ECO_LOG_PACKET_HEADER_SIZE 2U
+#define NUS_SELF_REPORT_PACKET_HEADER_SIZE 2U
 #define NUS_STORAGE_BUSY_RETRY_MS 50
 #define NUS_STORAGE_BUSY_TIMEOUT_MS 2000
 
@@ -422,11 +424,12 @@ static int send_self_reports(struct bt_conn *conn)
 	}
 
 	payload_len = MIN(max_payload, (uint16_t)sizeof(buffer));
-	if (payload_len <= 1) {
+	if (payload_len <= NUS_SELF_REPORT_PACKET_HEADER_SIZE) {
 		return -EMSGSIZE;
 	}
 
-	report_payload_len = payload_len - 1;
+	report_payload_len = MIN(payload_len - NUS_SELF_REPORT_PACKET_HEADER_SIZE,
+				  (uint16_t)(SELF_REPORT_ENTRY_SIZE * UINT8_MAX));
 	report_payload_len -= report_payload_len % SELF_REPORT_ENTRY_SIZE;
 	if (report_payload_len == 0) {
 		return -EMSGSIZE;
@@ -437,7 +440,8 @@ static int send_self_reports(struct bt_conn *conn)
 		retry_deadline = k_uptime_get() + NUS_STORAGE_BUSY_TIMEOUT_MS;
 		do {
 			err = self_report_export_begin(
-				&buffer[1], report_payload_len, &bytes_written);
+				&buffer[NUS_SELF_REPORT_PACKET_HEADER_SIZE],
+				report_payload_len, &bytes_written);
 			if (err != -EBUSY) {
 				break;
 			}
@@ -454,7 +458,10 @@ static int send_self_reports(struct bt_conn *conn)
 			break;
 		}
 
-		err = nus_send_confirmed(conn, buffer, bytes_written + 1);
+		buffer[1] = (uint8_t)(bytes_written / SELF_REPORT_ENTRY_SIZE);
+
+		err = nus_send_confirmed(
+			conn, buffer, bytes_written + NUS_SELF_REPORT_PACKET_HEADER_SIZE);
 		if (err) {
 			printk("Failed to send NUS self reports (err %d)\n", err);
 			self_report_export_abort();
@@ -504,11 +511,12 @@ static int send_eco_log(struct bt_conn *conn)
 	}
 
 	payload_len = MIN(max_payload, (uint16_t)sizeof(buffer));
-	if (payload_len <= 1) {
+	if (payload_len <= NUS_ECO_LOG_PACKET_HEADER_SIZE) {
 		return -EMSGSIZE;
 	}
 
-	entry_payload_len = payload_len - 1;
+	entry_payload_len = MIN(payload_len - NUS_ECO_LOG_PACKET_HEADER_SIZE,
+				 (uint16_t)(ECO_LOG_ENTRY_SIZE * UINT8_MAX));
 	entry_payload_len -= entry_payload_len % ECO_LOG_ENTRY_SIZE;
 	if (entry_payload_len == 0) {
 		return -EMSGSIZE;
@@ -519,7 +527,8 @@ static int send_eco_log(struct bt_conn *conn)
 		retry_deadline = k_uptime_get() + NUS_STORAGE_BUSY_TIMEOUT_MS;
 		do {
 			err = eco_log_export_begin(
-				&buffer[1], entry_payload_len, &bytes_written);
+				&buffer[NUS_ECO_LOG_PACKET_HEADER_SIZE],
+				entry_payload_len, &bytes_written);
 			if (err != -EBUSY) {
 				break;
 			}
@@ -536,7 +545,10 @@ static int send_eco_log(struct bt_conn *conn)
 			break;
 		}
 
-		err = nus_send_confirmed(conn, buffer, bytes_written + 1);
+		buffer[1] = (uint8_t)(bytes_written / ECO_LOG_ENTRY_SIZE);
+
+		err = nus_send_confirmed(
+			conn, buffer, bytes_written + NUS_ECO_LOG_PACKET_HEADER_SIZE);
 		if (err) {
 			printk("Failed to send NUS eco log (err %d)\n", err);
 			eco_log_export_abort();
@@ -630,6 +642,12 @@ static void transfer_work_handler(struct k_work *work)
 	}
 	printk("Sent time and status\n");
 
+	printk("Starting sending data\n");
+	err = send_networkdata(conn);
+	if (err) {
+		goto transfer_failed;
+	}
+
 	err = send_self_reports(conn);
 	if (err) {
 		goto transfer_failed;
@@ -637,14 +655,14 @@ static void transfer_work_handler(struct k_work *work)
 
 	err = send_eco_log(conn);
 	if (err) {
-		goto transfer_failed;
-	}
-	printk("Sent eco log\n");
-
-	printk("Starting sending data\n");
-	err = send_networkdata(conn);
-	if (err) {
-		goto transfer_failed;
+		/* Eco log has its own persistent storage, independent of
+		 * self-reports and contact data. Don't let a fault there (e.g.
+		 * NVM initialization failure) block the rest of the transfer.
+		 */
+		printk("Eco log transfer failed (err %d); continuing without it\n",
+		       err);
+	} else {
+		printk("Sent eco log\n");
 	}
 
 	err = send_finished(conn);

@@ -103,6 +103,7 @@ enum target_action {
     ACTION_DSA,
     ACTION_DST,
     ACTION_DSZ,
+    ACTION_DSL,
 };
 
 struct target_device {
@@ -114,6 +115,7 @@ static const struct target_device target_devices[] = {
     { .name = "DSA",    .action = ACTION_DSA },
     { .name = "DSZ", 	.action = ACTION_DSZ },
     { .name = "DST", 	.action = ACTION_DST },
+    { .name = "DSL", 	.action = ACTION_DSL },
 };
 struct parsed_advertisement {
 	enum target_action action;
@@ -645,10 +647,12 @@ static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type,
 		switch (parsed.action) {
 		case ACTION_DSA:
 		case ACTION_DST:
+		case ACTION_DSL:
 			if (parsed.manufacturer_found &&
 			    parsed.manufacturer_len >= 1U) {
 				network_evaluate_contact(
-					parsed.manufacturer_data[0], rssi);
+					parsed.manufacturer_data[0], rssi,
+					parsed.action == ACTION_DSL);
 			} else {
 				printk("Contact advertisement has no device id\n");
 			}

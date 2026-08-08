@@ -16,11 +16,13 @@
 #include "storage_work_queue.h"
 
 #define NETWORK_PARAMS_STORAGE_KEY "dsa/network"
-#define NETWORK_PARAMS_STORED_SIZE 2U
+#define NETWORK_PARAMS_STORED_SIZE 3U
+#define NETWORK_PARAMS_STORED_SIZE_V2 2U
 
 struct network_params {
 	uint8_t rssi_threshold;
 	uint8_t tracking_active;
+	uint8_t rssi_threshold_location;
 };
 
 static struct network_params params_network;
@@ -92,6 +94,8 @@ static void reset_parameters(void)
 {
 	params_network.rssi_threshold =
 		CONFIG_DSA_NETWORK_DEFAULT_RSSI_THRESHOLD;
+	params_network.rssi_threshold_location =
+		CONFIG_DSA_NETWORK_DEFAULT_RSSI_THRESHOLD_LOCATION;
 	params_network.tracking_active =
 		IS_ENABLED(CONFIG_DSA_NETWORK_DEFAULT_TRACKING_ACTIVE);
 	atomic_set(&tracking_active, params_network.tracking_active);
@@ -149,6 +153,15 @@ void network_apply_command(uint8_t parameter, uint16_t value)
 		params_network.rssi_threshold = (uint8_t)value;
 		printk("Network RSSI threshold set to -%u dBm\n", params_network.rssi_threshold);
 		break;
+	case P_RSSI_LOCATION:
+		if (value > UINT8_MAX) {
+			printk("Rejecting invalid location RSSI threshold value %u\n", value);
+			return;
+		}
+		params_network.rssi_threshold_location = (uint8_t)value;
+		printk("Location RSSI threshold set to -%u dBm\n",
+		       params_network.rssi_threshold_location);
+		break;
 	case P_NETWORK_RESET_PARAMS:
 		reset_parameters();
 		printk("Network parameters reset\n");
@@ -188,6 +201,7 @@ void network_command_commit(void)
 int network_params_load(void)
 {
 	uint8_t stored[NETWORK_PARAMS_STORED_SIZE];
+	uint8_t stored_v2[NETWORK_PARAMS_STORED_SIZE_V2];
 	uint8_t legacy_rssi;
 	int err;
 
@@ -200,6 +214,7 @@ int network_params_load(void)
 		}
 		params_network.rssi_threshold = stored[0];
 		params_network.tracking_active = stored[1];
+		params_network.rssi_threshold_location = stored[2];
 		atomic_set(&tracking_active, stored[1] != 0U);
 		device_set_storage_fault(STORAGE_FAULT_NETWORK_PARAMS, false);
 		return 0;
@@ -209,12 +224,37 @@ int network_params_load(void)
 		return err;
 	}
 
-	/* Migrate the previous versioned record, which only contained RSSI. */
+	/* Migrate the previous versioned record (RSSI + tracking only, no
+	 * location threshold).
+	 */
+	err = param_storage_load(NETWORK_PARAMS_STORAGE_KEY, &stored_v2,
+				 sizeof(stored_v2));
+	if (!err) {
+		if (stored_v2[1] > 1U) {
+			device_set_storage_fault(STORAGE_FAULT_NETWORK_PARAMS, true);
+			return -EBADMSG;
+		}
+		params_network.rssi_threshold = stored_v2[0];
+		params_network.tracking_active = stored_v2[1];
+		params_network.rssi_threshold_location =
+			CONFIG_DSA_NETWORK_DEFAULT_RSSI_THRESHOLD_LOCATION;
+		atomic_set(&tracking_active, stored_v2[1] != 0U);
+		err = network_params_save();
+		if (!err) {
+			printk("Migrated network parameters with default location RSSI threshold\n");
+		}
+		device_set_storage_fault(STORAGE_FAULT_NETWORK_PARAMS, err != 0);
+		return err;
+	}
+
+	/* Migrate the original versioned record, which only contained RSSI. */
 	err = param_storage_load(NETWORK_PARAMS_STORAGE_KEY, &legacy_rssi,
 				 sizeof(legacy_rssi));
 	if (!err) {
 		params_network.rssi_threshold = legacy_rssi;
 		params_network.tracking_active = 1U;
+		params_network.rssi_threshold_location =
+			CONFIG_DSA_NETWORK_DEFAULT_RSSI_THRESHOLD_LOCATION;
 		atomic_set(&tracking_active, 1);
 		err = network_params_save();
 		if (!err) {
@@ -233,6 +273,8 @@ int network_params_load(void)
 
 	params_network.rssi_threshold = legacy_rssi;
 	params_network.tracking_active = 1U;
+	params_network.rssi_threshold_location =
+		CONFIG_DSA_NETWORK_DEFAULT_RSSI_THRESHOLD_LOCATION;
 	atomic_set(&tracking_active, 1);
 	err = network_params_save();
 	if (!err) {
@@ -247,6 +289,7 @@ int network_params_save(void)
 	uint8_t stored[NETWORK_PARAMS_STORED_SIZE] = {
 		params_network.rssi_threshold,
 		params_network.tracking_active,
+		params_network.rssi_threshold_location,
 	};
 
 	int err = param_storage_save(NETWORK_PARAMS_STORAGE_KEY,
@@ -260,7 +303,8 @@ static bool network_params_equal(const struct network_params *a,
 				 const struct network_params *b)
 {
 	return a->rssi_threshold == b->rssi_threshold &&
-	       a->tracking_active == b->tracking_active;
+	       a->tracking_active == b->tracking_active &&
+	       a->rssi_threshold_location == b->rssi_threshold_location;
 }
 
 static uint8_t contact_status_from_count(uint16_t number_dataset)
@@ -420,15 +464,17 @@ static void network_status_update_handler(struct k_work *work)
 	}
 }
 
-void network_evaluate_contact(uint8_t id, int8_t rssi)
+void network_evaluate_contact(uint8_t id, int8_t rssi, bool is_location_tag)
 {
     uint8_t rssi_magnitude = (uint8_t)(-(int16_t)rssi);
+    uint8_t threshold = is_location_tag ? params_network.rssi_threshold_location
+					 : params_network.rssi_threshold;
 
     if (!atomic_get(&tracking_active)) {
 	    return;
     }
 
-    if (rssi_magnitude <= params_network.rssi_threshold)
+    if (rssi_magnitude <= threshold)
     {
 		k_mutex_lock(&contact_lock, K_FOREVER);
 		if (contact_count == CONFIG_DSA_NETWORK_RING_COUNT &&

@@ -293,7 +293,19 @@ int self_report_storage_init(void)
 	report_fs.sector_count = SELF_REPORT_STORAGE_SIZE / info.size;
 	err = nvs_mount(&report_fs);
 	if (err) {
-		goto out;
+		/* The partition may hold stale data left over from before this
+		 * partition existed (e.g. a layout change without a full chip
+		 * erase). Erase it once and retry before giving up.
+		 */
+		printk("Self-report NVM mount failed (err %d); erasing partition and retrying\n",
+		       err);
+		if (flash_erase(report_fs.flash_device, report_fs.offset,
+				SELF_REPORT_STORAGE_SIZE) == 0) {
+			err = nvs_mount(&report_fs);
+		}
+		if (err) {
+			goto out;
+		}
 	}
 
 	read = nvs_read(&report_fs, SELF_REPORT_STORAGE_META_ID, &meta,

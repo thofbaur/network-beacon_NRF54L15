@@ -73,6 +73,48 @@ static bool initialized;
 static bool meta_dirty;
 static K_MUTEX_DEFINE(storage_lock);
 
+/*
+ * Init-failure diagnostics captured for a deferred report. Boot-time RTT
+ * output is congested enough that printk() calls issued during early init
+ * (this runs before Bluetooth is up) can be silently dropped at the
+ * transport layer, with no "messages dropped" notice the way the deferred
+ * LOG subsystem gives - unlike printk() calls later in boot, which have
+ * reliably shown up in every capture so far. Recording the values and
+ * printing them once, a few seconds after boot, avoids losing them.
+ */
+struct eco_log_storage_diag {
+	int device_ready_err;
+	int page_info_err;
+	bool page_size_mismatch;
+	uint32_t page_size;
+	int mount_err;
+	bool mount_retried;
+	int mount_retry_err;
+	int meta_read_result;
+	int recover_meta_err;
+	int uncommitted_err;
+	int final_err;
+};
+
+static struct eco_log_storage_diag last_init_diag;
+static bool diag_report_scheduled;
+
+static void diag_report_handler(struct k_work *work)
+{
+	ARG_UNUSED(work);
+
+	printk("Eco log NVM init diagnostics: device_err=%d page_info_err=%d page_mismatch=%d page_size=%u mount_err=%d retried=%d retry_err=%d meta_read=%d recover_meta_err=%d uncommitted_err=%d final_err=%d\n",
+	       last_init_diag.device_ready_err, last_init_diag.page_info_err,
+	       last_init_diag.page_size_mismatch,
+	       (unsigned int)last_init_diag.page_size,
+	       last_init_diag.mount_err, last_init_diag.mount_retried,
+	       last_init_diag.mount_retry_err, last_init_diag.meta_read_result,
+	       last_init_diag.recover_meta_err, last_init_diag.uncommitted_err,
+	       last_init_diag.final_err);
+}
+
+static K_WORK_DELAYABLE_DEFINE(diag_report_work, diag_report_handler);
+
 static uint16_t block_id(uint32_t sequence)
 {
 	return ECO_LOG_STORAGE_BLOCK_ID_BASE +
@@ -97,6 +139,7 @@ static int save_meta(void)
 				    &meta, sizeof(meta));
 
 	if (written < 0) {
+		printk("Eco log NVM meta write failed (err %d)\n", (int)written);
 		device_set_storage_fault(STORAGE_FAULT_ECO_LOG_META, true);
 		return (int)written;
 	}
@@ -272,34 +315,55 @@ int eco_log_storage_init(void)
 		return 0;
 	}
 
+	memset(&last_init_diag, 0, sizeof(last_init_diag));
+
 	eco_fs.flash_device = ECO_LOG_STORAGE_DEVICE;
 	if (!device_is_ready(eco_fs.flash_device)) {
 		err = -ENODEV;
+		last_init_diag.device_ready_err = err;
 		goto out;
 	}
 
 	eco_fs.offset = ECO_LOG_STORAGE_OFFSET;
 	err = flash_get_page_info_by_offs(eco_fs.flash_device,
 					  eco_fs.offset, &info);
+	last_init_diag.page_info_err = err;
 	if (err) {
 		goto out;
 	}
 	if (info.size != ECO_LOG_STORAGE_SECTOR_SIZE) {
 		err = -ENOTSUP;
+		last_init_diag.page_size_mismatch = true;
+		last_init_diag.page_size = info.size;
 		goto out;
 	}
 
 	eco_fs.sector_size = info.size;
 	eco_fs.sector_count = ECO_LOG_STORAGE_SIZE / info.size;
 	err = nvs_mount(&eco_fs);
+	last_init_diag.mount_err = err;
 	if (err) {
-		goto out;
+		/* The partition may hold stale data left over from before this
+		 * partition existed (e.g. a layout change without a full chip
+		 * erase). Erase it once and retry before giving up.
+		 */
+		last_init_diag.mount_retried = true;
+		if (flash_erase(eco_fs.flash_device, eco_fs.offset,
+				ECO_LOG_STORAGE_SIZE) == 0) {
+			err = nvs_mount(&eco_fs);
+		}
+		last_init_diag.mount_retry_err = err;
+		if (err) {
+			goto out;
+		}
 	}
 
 	read = nvs_read(&eco_fs, ECO_LOG_STORAGE_META_ID, &meta,
 			sizeof(meta));
+	last_init_diag.meta_read_result = (int)read;
 	if (read == -ENOENT) {
 		err = recover_meta_from_blocks();
+		last_init_diag.recover_meta_err = err;
 	} else if (read < 0) {
 		err = (int)read;
 	} else if (read != sizeof(meta) ||
@@ -321,6 +385,7 @@ int eco_log_storage_init(void)
 
 	if (!err) {
 		err = recover_uncommitted_blocks();
+		last_init_diag.uncommitted_err = err;
 	}
 
 	if (!err) {
@@ -329,7 +394,11 @@ int eco_log_storage_init(void)
 out:
 	device_set_storage_fault(STORAGE_FAULT_ECO_LOG_INIT, err != 0);
 	if (err) {
-		printk("Eco log NVM initialization failed (err %d)\n", err);
+		last_init_diag.final_err = err;
+		if (!diag_report_scheduled) {
+			diag_report_scheduled = true;
+			k_work_schedule(&diag_report_work, K_SECONDS(3));
+		}
 	}
 	k_mutex_unlock(&storage_lock);
 	return err;

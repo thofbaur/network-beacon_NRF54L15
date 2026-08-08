@@ -1,11 +1,12 @@
 #ifndef NETWORK_H
 #define NETWORK_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #define NETWORK_CONTACT_ENTRY_SIZE 5U
 
-void network_evaluate_contact(uint8_t id, int8_t rssi);
+void network_evaluate_contact(uint8_t id, int8_t rssi, bool is_location_tag);
 int network_init(void);
 void network_command_begin(void);
 void network_apply_command(uint8_t parameter, uint16_t value);

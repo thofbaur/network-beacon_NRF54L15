@@ -1,27 +1,31 @@
 tfm:
   address: 0x0
   region: flash_primary
-  size: 0x40000
+  # Right-sized to actual TF-M secure image usage (108248 B in the larger
+  # tag/Debug build) plus ~25 kB headroom for growth, rounded up to a
+  # sector. Was 0x40000; freed space was reassigned to contact_storage.
+  # Re-check actual usage (tfm_s.bin) before shrinking further.
+  size: 0x21000
 tfm_secure:
   address: 0x0
   region: flash_primary
-  size: 0x40000
+  size: 0x21000
   span:
   - tfm
 tfm_its:
-  address: 0x40000
+  address: 0x21000
   region: flash_primary
   size: 0x4000
 tfm_otp_nv_counters:
-  address: 0x44000
+  address: 0x25000
   region: flash_primary
   size: 0x2000
 tfm_ps:
-  address: 0x46000
+  address: 0x27000
   region: flash_primary
   size: 0x4000
 tfm_storage:
-  address: 0x40000
+  address: 0x21000
   region: flash_primary
   size: 0xa000
   span:
@@ -29,37 +33,60 @@ tfm_storage:
   - tfm_otp_nv_counters
   - tfm_ps
 app:
-  address: 0x4a000
+  address: 0x2b000
   region: flash_primary
-  size: 0x6a000
+  # Right-sized to actual NS app image usage (246664 B in the larger
+  # tag/Debug build) plus ~25 kB headroom for growth, rounded up to a
+  # sector. Was 0x6a000; freed space was reassigned to contact_storage.
+  # Re-check actual usage (zephyr.bin) before shrinking further.
+  size: 0x43000
 tfm_nonsecure:
-  address: 0x4a000
+  address: 0x2b000
   region: flash_primary
-  size: 0x6a000
+  size: 0x43000
   span:
   - app
 contact_storage:
-  address: 0xb4000
+  address: 0x6e000
   region: flash_primary
-  size: 0xc5000 # TODO: tune fixed contact NVM partition size.
+  # nRF54L15 has 1524 kB of flash but the last 96 kB are reserved for FLPR
+  # and TF-M additionally reserves 32 kB for its own NS storage partition
+  # just below that (see flash_layout.h), leaving 0x165000 as the real
+  # ceiling for this whole nonsecure_storage group. This partition claims
+  # everything up to that ceiling not needed by self_report/settings/eco
+  # (each pinned at the 2-sector NVS minimum) or by tfm/app above. Do not
+  # grow this without shrinking to stay within 0x165000 total - see
+  # eco_log_storage's boot-time "-22" failure history for what happens
+  # otherwise.
+  size: 0xf1000
 self_report_storage:
-  address: 0x179000
+  address: 0x15f000
   region: flash_primary
   size: 0x2000
 settings_storage:
-  address: 0x17b000
+  address: 0x161000
   region: flash_primary
   size: 0x2000
 eco_log_storage:
-  address: 0x17d000
+  address: 0x163000
   region: flash_primary
   size: 0x2000
 nonsecure_storage:
-  address: 0xb4000
+  address: 0x6e000
   region: flash_primary
-  size: 0xcb000
+  size: 0xf7000
   span:
   - contact_storage
   - self_report_storage
   - settings_storage
   - eco_log_storage
+flpr_reserved:
+  # nRF54L15's last 96 kB of physical flash (0x165000-0x17d000) are reserved
+  # for the FLPR core by TF-M (flash_layout.h) and are not non-secure
+  # accessible, even though partition_manager's flash_primary region still
+  # spans the full 0x17d000 and would otherwise place dynamic partitions
+  # here. This inert placeholder claims that dead space so partition_manager
+  # sees a single gap (for 'app') instead of two. Nothing reads or writes it.
+  address: 0x165000
+  region: flash_primary
+  size: 0x18000

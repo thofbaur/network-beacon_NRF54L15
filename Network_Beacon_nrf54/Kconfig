@@ -43,7 +43,7 @@ config DSA_DEV_SYNTHETIC_SELF_REPORT_COUNT
 
 config DSA_DEV_ECO_LED_INDICATOR
 	bool "Light a solid LED during energy conservation mode"
-	default y
+	default n
 	help
 	  Keep an LED lit instead of off while inactivity detection has put
 	  the device into energy conservation mode, so the mode is visible
@@ -57,7 +57,7 @@ menu "DSA LED behavior"
 
 config DSA_DEFAULT_LED_ACTIVE
 	bool "Enable status LED blinking by default"
-	default y
+	default n
 
 config DSA_LED_BLINK_INTERVAL_MS
 	int "Default status LED blink interval in milliseconds"
@@ -88,6 +88,16 @@ config DSA_NETWORK_DEFAULT_RSSI_THRESHOLD
 	default 80
 	range 0 255
 
+config DSA_NETWORK_DEFAULT_RSSI_THRESHOLD_LOCATION
+	int "Default RSSI magnitude threshold for DSL location tags"
+	default 100
+	range 0 255
+	help
+	  Location tags (advertised name "DSL") are stationary and use a
+	  separate, looser threshold than moving person-worn beacons (DSA/
+	  DST), since interaction distance for a fixed location doesn't need
+	  the same precision. Magnitude only: 100 means -100 dBm.
+
 config DSA_NETWORK_DEFAULT_TRACKING_ACTIVE
 	bool "Enable contact tracking by default"
 	default y
@@ -104,7 +114,14 @@ config DSA_NETWORK_FLUSH_THRESHOLD
 
 config DSA_NETWORK_FLASH_SIZE_BYTES
 	hex "Contact flash partition size in bytes"
-	default 0xc5000
+	default 0xf1000
+	help
+	  Must match contact_storage's size in pm_static.yml. Bounded by
+	  nRF54L15's real usable flash (0x165000, after FLPR and TF-M's NS
+	  storage reservations) minus the fixed 2-sector NVS minimum each for
+	  self_report_storage, settings_storage, and eco_log_storage, minus
+	  the tfm/app firmware image partitions (each right-sized to actual
+	  usage plus ~25 kB growth headroom - see pm_static.yml).
 
 endmenu
 
@@ -139,7 +156,7 @@ config DSA_SCAN_WINDOW_MS
 
 config DSA_SCAN_INTERVAL_MS
 	int "High-activity scan interval in milliseconds"
-	default 10000
+	default 7000
 	range 3 10240
 
 config DSA_ECO_ADV_INTERVAL_MIN_MS
@@ -200,7 +217,7 @@ config DSA_MOTION_DEFAULT_ACTIVE
 
 config DSA_MOTION_INACTIVITY_TIMEOUT_S
 	int "Default inactivity timeout before energy conservation mode, in seconds"
-	default 900
+	default 3600
 	range 1 65535
 
 endmenu

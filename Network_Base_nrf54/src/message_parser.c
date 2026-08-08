@@ -14,7 +14,9 @@ LOG_MODULE_DECLARE(network_base);
 #define DSA_TIME_LEN 4
 #define DSA_DATA_COUNT_LEN 1
 #define DSA_DATA_SET_LEN 5
+#define DSA_SELF_REPORT_COUNT_LEN 1
 #define DSA_SELF_REPORT_SET_LEN 3
+#define DSA_ECO_LOG_COUNT_LEN 1
 #define DSA_ECO_LOG_SET_LEN 6
 #define DSA_VOLTAGE_LEN 2
 #define DSA_CONTROL_LEN 8
@@ -36,9 +38,9 @@ static size_t expected_len_for_flag(uint8_t flag)
 	case DSA_NUS_FLAG_CONTROL:
 		return DSA_CONTROL_LEN;
 	case DSA_NUS_FLAG_SELF_REPORT:
-		return DSA_SELF_REPORT_SET_LEN;
+		return DSA_SELF_REPORT_COUNT_LEN;
 	case DSA_NUS_FLAG_ECO_LOG:
-		return DSA_ECO_LOG_SET_LEN;
+		return DSA_ECO_LOG_COUNT_LEN;
 	default:
 		return 0;
 	}
@@ -124,11 +126,20 @@ static void handle_voltage_package(uint8_t beacon_id, const uint8_t *data)
 static void handle_self_report_block(uint8_t beacon_id, const uint8_t *data,
 				     size_t len)
 {
-	size_t report_count = len / DSA_SELF_REPORT_SET_LEN;
+	uint8_t report_count = data[0];
+	size_t expected_len = DSA_SELF_REPORT_COUNT_LEN +
+			      ((size_t)report_count * DSA_SELF_REPORT_SET_LEN);
+
+	if (len != expected_len) {
+		LOG_WRN("Invalid SELF_REPORT block length %u for %u reports",
+			(unsigned int)len, report_count);
+		return;
+	}
 
 	for (size_t i = 0; i < report_count; i++) {
 		uint32_t timer = uint24_be_decode(
-			&data[i * DSA_SELF_REPORT_SET_LEN]);
+			&data[DSA_SELF_REPORT_COUNT_LEN +
+			      (i * DSA_SELF_REPORT_SET_LEN)]);
 
 		output_messagef("ID:%u  Self-report time: %u", beacon_id,
 				timer);
@@ -138,10 +149,19 @@ static void handle_self_report_block(uint8_t beacon_id, const uint8_t *data,
 static void handle_eco_log_block(uint8_t beacon_id, const uint8_t *data,
 				 size_t len)
 {
-	size_t entry_count = len / DSA_ECO_LOG_SET_LEN;
+	uint8_t entry_count = data[0];
+	size_t expected_len = DSA_ECO_LOG_COUNT_LEN +
+			      ((size_t)entry_count * DSA_ECO_LOG_SET_LEN);
+
+	if (len != expected_len) {
+		LOG_WRN("Invalid ECO_LOG block length %u for %u entries",
+			(unsigned int)len, entry_count);
+		return;
+	}
 
 	for (size_t i = 0; i < entry_count; i++) {
-		const uint8_t *entry = &data[i * DSA_ECO_LOG_SET_LEN];
+		const uint8_t *entry = &data[DSA_ECO_LOG_COUNT_LEN +
+					     (i * DSA_ECO_LOG_SET_LEN)];
 		uint32_t enter_time = uint24_be_decode(entry);
 		uint32_t leave_time = uint24_be_decode(&entry[3]);
 
@@ -239,7 +259,7 @@ static void handle_complete_package(uint8_t beacon_id, uint8_t flag,
 		handle_control_package(beacon_id, data);
 		break;
 	case DSA_NUS_FLAG_SELF_REPORT:
-		if ((len == 0) || ((len % DSA_SELF_REPORT_SET_LEN) != 0)) {
+		if (len < DSA_SELF_REPORT_COUNT_LEN) {
 			LOG_WRN("Invalid SELF_REPORT block length %u",
 				(unsigned int)len);
 			break;
@@ -247,7 +267,7 @@ static void handle_complete_package(uint8_t beacon_id, uint8_t flag,
 		handle_self_report_block(beacon_id, data, len);
 		break;
 	case DSA_NUS_FLAG_ECO_LOG:
-		if ((len == 0) || ((len % DSA_ECO_LOG_SET_LEN) != 0)) {
+		if (len < DSA_ECO_LOG_COUNT_LEN) {
 			LOG_WRN("Invalid ECO_LOG block length %u",
 				(unsigned int)len);
 			break;

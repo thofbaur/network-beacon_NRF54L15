@@ -34,7 +34,6 @@ int main(void)
 	if (err) {
 		printk("Self-report subsystem initialization failed (err %d)\n",
 		       err);
-		return err;
 	}
 
 	err = eco_log_init();
@@ -45,7 +44,6 @@ int main(void)
 	err = network_init();
 	if (err) {
 		printk("Network subsystem initialization failed (err %d)\n", err);
-		return err;
 	}
 	err = battery_voltage_init();
 	if (err) {

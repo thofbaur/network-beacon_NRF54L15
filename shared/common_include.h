@@ -64,6 +64,7 @@
 
 /* Network parameters. */
 #define P_RSSI_NETWORK			(P_BASE_NETWORK + 4)
+#define P_RSSI_LOCATION			(P_BASE_NETWORK + 5)
 #define P_NETWORK_RESET_PARAMS		(P_BASE_NETWORK + 12)
 #define P_TRACKING_ACTIVE		(P_BASE_NETWORK + 13)
 

@@ -302,10 +302,22 @@ int network_storage_init(void)
 
 	err = nvs_mount(&contact_fs);
 	if (err) {
-		printk("Failed to mount contact NVM storage (err %d)\n", err);
-		device_set_storage_fault(STORAGE_FAULT_CONTACT_INIT, true);
-		k_mutex_unlock(&storage_lock);
-		return err;
+		/* The partition may hold stale data left over from before this
+		 * partition existed (e.g. a layout change without a full chip
+		 * erase). Erase it once and retry before giving up.
+		 */
+		printk("Contact NVM mount failed (err %d); erasing partition and retrying\n",
+		       err);
+		if (flash_erase(contact_fs.flash_device, contact_fs.offset,
+				NETWORK_STORAGE_PARTITION_SIZE) == 0) {
+			err = nvs_mount(&contact_fs);
+		}
+		if (err) {
+			printk("Failed to mount contact NVM storage (err %d)\n", err);
+			device_set_storage_fault(STORAGE_FAULT_CONTACT_INIT, true);
+			k_mutex_unlock(&storage_lock);
+			return err;
+		}
 	}
 
 	read = nvs_read(&contact_fs, NETWORK_STORAGE_META_ID, &meta, sizeof(meta));

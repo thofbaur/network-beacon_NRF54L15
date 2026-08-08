@@ -23,6 +23,15 @@ DEFAULT_RTT_SPEED = 4000
 READ_CHUNK_SIZE = 1024
 IDLE_SLEEP_SECONDS = 0.01
 DSA_DATA_SET_LEN = 5
+DSA_ECO_LOG_ENTRY_LEN = 6
+DSA_SELF_REPORT_ENTRY_LEN = 3
+# Upper bound on a single raw NUS frame's flag+payload region, mirroring
+# Network_Base_nrf54's CONFIG_BT_L2CAP_TX_MTU (the base truncates/forwards
+# each NUS notification verbatim at this size). Used to reject an implausible
+# eco-log entry count immediately instead of stalling until enough bytes
+# accumulate to test a frame size that can never be valid - e.g. if the
+# beacon is still running firmware from before the count byte was added.
+MAX_NUS_RAW_PAYLOAD_LEN = 247
 NETWORK_BASE_SUBSTRING = "network_base:"
 DEFAULT_OMIT_NETWORK_BASE_LINES = True
 DEFAULT_OMIT_TIMESTAMPED_LINES = True
@@ -36,6 +45,7 @@ DSA_NUS_FLAGS = {
     0x04: "DSA_NUS_FLAG_CONTROL",
     0x05: "DSA_NUS_FLAG_TIME_CONTACTS_VOLTAGE",
     0x06: "DSA_NUS_FLAG_SELF_REPORT",
+    0x07: "DSA_NUS_FLAG_ECO_LOG",
 }
 DSA_NUS_FLAG_TIME = 0x01
 DSA_NUS_FLAG_DATA = 0x02
@@ -43,12 +53,12 @@ DSA_NUS_FLAG_VOLTAGE = 0x03
 DSA_NUS_FLAG_CONTROL = 0x04
 DSA_NUS_FLAG_TIME_CONTACTS_VOLTAGE = 0x05
 DSA_NUS_FLAG_SELF_REPORT = 0x06
+DSA_NUS_FLAG_ECO_LOG = 0x07
 DSA_NUS_PAYLOAD_LENGTHS = {
     DSA_NUS_FLAG_TIME: 4,
     DSA_NUS_FLAG_VOLTAGE: 2,
     DSA_NUS_FLAG_CONTROL: 8,
     DSA_NUS_FLAG_TIME_CONTACTS_VOLTAGE: 9,
-    DSA_NUS_FLAG_SELF_REPORT: 3,
 }
 
 
@@ -221,6 +231,10 @@ class MessageParser:
         flag_value = self._buffer[3]
         if flag_value == DSA_NUS_FLAG_DATA:
             return self._parse_data_message(beacon_id, frame_header_size)
+        if flag_value == DSA_NUS_FLAG_ECO_LOG:
+            return self._parse_eco_log_message(beacon_id, frame_header_size)
+        if flag_value == DSA_NUS_FLAG_SELF_REPORT:
+            return self._parse_self_report_message(beacon_id, frame_header_size)
 
         payload_len = DSA_NUS_PAYLOAD_LENGTHS.get(flag_value)
         if payload_len is None:
@@ -264,6 +278,76 @@ class MessageParser:
         output_lines = parse_payload(DSA_NUS_FLAG_DATA, payload, raw_message)
         return (
             ParsedMessage(beacon_id, DSA_NUS_FLAG_DATA, DSA_NUS_FLAGS[DSA_NUS_FLAG_DATA], payload, output_lines),
+            bool(output_lines),
+        )
+
+    def _parse_eco_log_message(self, beacon_id: str, frame_header_size: int) -> Optional[tuple[ParsedMessage, bool]]:
+        entry_count_size = 1
+        if len(self._buffer) < frame_header_size + entry_count_size:
+            return None
+
+        entry_count = self._buffer[frame_header_size]
+        payload_len = entry_count_size + (entry_count * DSA_ECO_LOG_ENTRY_LEN)
+        flag_size = 1
+        if flag_size + payload_len > MAX_NUS_RAW_PAYLOAD_LEN:
+            # Implausible entry count for a single NUS notification - most
+            # likely a stale beacon still sending the pre-count-byte format,
+            # where this byte is actually the first entry's timer high byte.
+            # Resync now instead of waiting for a frame size that can never
+            # complete.
+            self._discard_invalid_frame()
+            return ParsedMessage(beacon_id, DSA_NUS_FLAG_ECO_LOG, DSA_NUS_FLAGS[DSA_NUS_FLAG_ECO_LOG], b"", ()), False
+
+        frame_size = frame_header_size + payload_len
+        total_size = frame_size + len(MESSAGE_TERMINATOR)
+        if len(self._buffer) < total_size:
+            return None
+        if self._buffer[frame_size:total_size] != MESSAGE_TERMINATOR:
+            self._discard_invalid_frame()
+            return ParsedMessage(beacon_id, DSA_NUS_FLAG_ECO_LOG, DSA_NUS_FLAGS[DSA_NUS_FLAG_ECO_LOG], b"", ()), False
+
+        raw_message = bytes(self._buffer[:frame_size])
+        payload = bytes(self._buffer[frame_header_size:frame_size])
+        del self._buffer[:total_size]
+
+        output_lines = parse_payload(DSA_NUS_FLAG_ECO_LOG, payload, raw_message)
+        return (
+            ParsedMessage(beacon_id, DSA_NUS_FLAG_ECO_LOG, DSA_NUS_FLAGS[DSA_NUS_FLAG_ECO_LOG], payload, output_lines),
+            bool(output_lines),
+        )
+
+    def _parse_self_report_message(self, beacon_id: str, frame_header_size: int) -> Optional[tuple[ParsedMessage, bool]]:
+        report_count_size = 1
+        if len(self._buffer) < frame_header_size + report_count_size:
+            return None
+
+        report_count = self._buffer[frame_header_size]
+        payload_len = report_count_size + (report_count * DSA_SELF_REPORT_ENTRY_LEN)
+        flag_size = 1
+        if flag_size + payload_len > MAX_NUS_RAW_PAYLOAD_LEN:
+            # Implausible report count for a single NUS notification - most
+            # likely a stale beacon still sending the pre-count-byte format,
+            # where this byte is actually the first report's timer high byte.
+            # Resync now instead of waiting for a frame size that can never
+            # complete.
+            self._discard_invalid_frame()
+            return ParsedMessage(beacon_id, DSA_NUS_FLAG_SELF_REPORT, DSA_NUS_FLAGS[DSA_NUS_FLAG_SELF_REPORT], b"", ()), False
+
+        frame_size = frame_header_size + payload_len
+        total_size = frame_size + len(MESSAGE_TERMINATOR)
+        if len(self._buffer) < total_size:
+            return None
+        if self._buffer[frame_size:total_size] != MESSAGE_TERMINATOR:
+            self._discard_invalid_frame()
+            return ParsedMessage(beacon_id, DSA_NUS_FLAG_SELF_REPORT, DSA_NUS_FLAGS[DSA_NUS_FLAG_SELF_REPORT], b"", ()), False
+
+        raw_message = bytes(self._buffer[:frame_size])
+        payload = bytes(self._buffer[frame_header_size:frame_size])
+        del self._buffer[:total_size]
+
+        output_lines = parse_payload(DSA_NUS_FLAG_SELF_REPORT, payload, raw_message)
+        return (
+            ParsedMessage(beacon_id, DSA_NUS_FLAG_SELF_REPORT, DSA_NUS_FLAGS[DSA_NUS_FLAG_SELF_REPORT], payload, output_lines),
             bool(output_lines),
         )
 
@@ -331,6 +415,10 @@ def parse_payload(flag_value: int, payload: bytes, raw_message: bytes) -> tuple[
             f"Contact Count: {uint24_be_decode(payload[4:7])}",
             f"Voltage: {uint16_be_decode(payload[7:9])}",
         )
+    if flag_value == DSA_NUS_FLAG_ECO_LOG:
+        return parse_eco_log_payload(payload)
+    if flag_value == DSA_NUS_FLAG_SELF_REPORT:
+        return parse_self_report_payload(payload)
     return ()
 
 
@@ -340,6 +428,18 @@ def validate_payload(flag_value: int, payload: bytes) -> bool:
             return False
         contact_count = payload[0]
         return len(payload[1:]) == contact_count * DSA_DATA_SET_LEN
+
+    if flag_value == DSA_NUS_FLAG_ECO_LOG:
+        if len(payload) < 1:
+            return False
+        entry_count = payload[0]
+        return len(payload[1:]) == entry_count * DSA_ECO_LOG_ENTRY_LEN
+
+    if flag_value == DSA_NUS_FLAG_SELF_REPORT:
+        if len(payload) < 1:
+            return False
+        report_count = payload[0]
+        return len(payload[1:]) == report_count * DSA_SELF_REPORT_ENTRY_LEN
 
     expected_len = DSA_NUS_PAYLOAD_LENGTHS.get(flag_value)
     return expected_len is not None and len(payload) == expected_len
@@ -356,6 +456,31 @@ def parse_data_payload(payload: bytes) -> tuple[str, ...]:
         timer = uint24_be_decode(data_set[1:4])
         rssi = data_set[4]
         lines.append(f"ID2: {id2}, Timer: {timer}, RSSI: -{rssi}")
+    return tuple(lines)
+
+
+def parse_eco_log_payload(payload: bytes) -> tuple[str, ...]:
+    entry_count = payload[0]
+    entry_payload = payload[1:]
+    lines = []
+    for entry_index in range(entry_count):
+        offset = entry_index * DSA_ECO_LOG_ENTRY_LEN
+        entry = entry_payload[offset : offset + DSA_ECO_LOG_ENTRY_LEN]
+        enter_time = uint24_be_decode(entry[0:3])
+        leave_time = uint24_be_decode(entry[3:6])
+        lines.append(f"Eco Session Enter: {enter_time}, Leave: {leave_time}")
+    return tuple(lines)
+
+
+def parse_self_report_payload(payload: bytes) -> tuple[str, ...]:
+    report_count = payload[0]
+    report_payload = payload[1:]
+    lines = []
+    for report_index in range(report_count):
+        offset = report_index * DSA_SELF_REPORT_ENTRY_LEN
+        entry = report_payload[offset : offset + DSA_SELF_REPORT_ENTRY_LEN]
+        timer = uint24_be_decode(entry)
+        lines.append(f"Self-report time: {timer}")
     return tuple(lines)
 
 
