@@ -15,24 +15,33 @@
 #define ADV_POS_RADIO_STATUS 1
 #define ADV_POS_NETWORK_STATUS 2
 
-/* Radio and advertising status bits. */
-#define RADIO_STATUS_SCAN_RUNTIME_ERROR	BIT(0)
+/* Radio and advertising status bits.
+ * Bit 0: scanning isn't tracking contacts right now, whether because a
+ *   runtime start/stop failed or the accept-list configuration failed at
+ *   boot - both look the same to anyone who can only reach the tag over
+ *   BLE, so they share one advertised bit (see radio.c's scan_runtime_fault
+ *   / scan_config_fault).
+ * Bit 1: NUS unavailable - the tag can never be read out over BLE.
+ * Bit 5: motion sensor unavailable - inactivity detection can't run, so the
+ *   tag is stuck in high-activity mode (see motion.c).
+ * Bits 2-4 are STORAGE_STATUS_* (device.h); bits 6-7 are reserved.
+ */
+#define RADIO_STATUS_SCAN_ERROR		BIT(0)
 #define RADIO_STATUS_NUS_ERROR		BIT(1)
-#define RADIO_STATUS_SCAN_CONFIG_ERROR	BIT(2)
+#define RADIO_STATUS_MOTION_UNAVAILABLE	BIT(5)
 
 #define BLE_UPDATE_ADV_ERROR		BIT(0)
 #define BLE_UPDATE_SCAN_ERROR		BIT(1)
 #define BLE_UPDATE_STATUS_ERROR		BIT(2)
 
-/* Network data-level encoding. Threshold values remain provisional. */
-// ToDo: set production values for data-level thresholds
+/* Network data-level encoding.*/
 #define DATA_LEVEL_1	0
 #define DATA_LEVEL_2	1
-#define DATA_LEVEL_3	4
-#define DATA_LEVEL_4	16
-#define DATA_LEVEL_5	32
-#define DATA_LEVEL_6	64
-#define DATA_LEVEL_7	256
+#define DATA_LEVEL_3	5000
+#define DATA_LEVEL_4	40000
+#define DATA_LEVEL_5	100000
+#define DATA_LEVEL_6	150000
+#define DATA_LEVEL_7	210000
 
 #define DATA_LEVEL_MASK		0x0F
 #define P_SHIFT_STATUS_DATA	0
