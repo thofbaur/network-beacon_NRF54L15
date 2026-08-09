@@ -51,7 +51,7 @@ Review these parameters before building a production release:
 - Base station readout threshold in `Network_Base_nrf54/dsa.conf`: `CONFIG_DSA_READOUT_LEVEL`, currently `0`.
 - Base station output mode in `Network_Base_nrf54/prj.conf`: currently raw UART output for use with `dsa_logger.py`.
 - Data-level thresholds in `shared/common_include.h`: currently marked provisional in code and should be confirmed before rollout.
-- Tag `Network_Beacon_nrf54/prj.conf` still has TODO comments for disabling logging/console in release; decide whether production should keep them enabled.
+- Tag `Network_Beacon_nrf54/prj.conf`: `CONFIG_LOG`/`CONFIG_PRINTK`/`CONFIG_CONSOLE`/`CONFIG_UART_CONSOLE` are disabled for production. Re-enable all four for bench debugging if needed; the advertised status byte (see below) is the diagnostic channel once disabled.
 
 Build and flash tag firmware for actual nRF54L15 tag hardware:
 
@@ -77,11 +77,21 @@ west build -b nrf54l15dk/nrf54l15/cpuapp/ns -d build --sysbuild .
 west flash -d build
 ```
 
-After flashing, verify each tag with a BLE scanner. It should advertise as `DSA` with three manufacturer-data bytes:
+After flashing, verify each tag with a BLE scanner. It should advertise as `DSA` with three manufacturer-data bytes (`shared/common_include.h`, `ADV_POS_*`):
 
-- Byte 0: tag ID.
-- Byte 1: radio/storage status bits.
-- Byte 2: network status. Bits `0..3` are contact data level, bits `4..6` are battery level, bit `7` is inactivity/eco mode.
+- **Byte 0 — tag ID.** The one-byte ID assigned in `radio_ids.c`'s `known_device_table`, or `0xff` for a device not yet in that table.
+- **Byte 1 — radio/storage status bits** (`device_get_radio_status()`), all "1 = fault". This byte is the primary field-diagnostic channel for a deployed tag — advertised openly, so it's readable by a passive BLE scan without connecting — and its layout is chosen for that: bits flag conditions that mean either "this tag's data is unreachable or being lost" or "this tag needs physical attention," rather than raw internal error codes.
+  - Bit 0 (`RADIO_STATUS_SCAN_ERROR`): scanning isn't currently tracking contacts, whether from a runtime scan start/stop failure or a boot-time accept-list configuration failure (`radio.c`'s `scan_runtime_fault`/`scan_config_fault`, merged since both look the same from outside).
+  - Bit 1 (`RADIO_STATUS_NUS_ERROR`): NUS (Nordic UART Service) setup/runtime error — **critical**: this tag can never be read out over BLE while set.
+  - Bit 2 (`STORAGE_STATUS_STORAGE_FULL`): contact/self-report/eco-log flash storage is full and actively discarding its oldest un-exported entries (`STORAGE_FULL_*` in `device.h`) — **critical**: real, ongoing data loss, not just an error condition.
+  - Bit 3 (`STORAGE_STATUS_PARAM_ERROR`): a persisted runtime parameter (LED, network, radio, or motion settings) failed to save.
+  - Bit 4 (`STORAGE_STATUS_STORAGE_ERROR`): aggregate fault across contact/self-report/eco-log flash storage — any init/read/write/delete/metadata failure in any of the three (`STORAGE_FAULT_STORAGE_MASK` in `device.h`).
+  - Bit 5 (`RADIO_STATUS_MOTION_UNAVAILABLE`): the motion sensor is unavailable, so inactivity detection can't run and the tag is stuck in high-activity mode — a battery-life risk worth flagging even though it's not data loss.
+  - Bits 6-7: reserved.
+- **Byte 2 — network status** (`device_get_network_status()`):
+  - Bits 0-3 (mask `0x0F`, `DATA_LEVEL_MASK`): contact data level 0-7. Derived from the stored contact count by `contact_status_from_count()` in `network.c` against the `DATA_LEVEL_1`..`DATA_LEVEL_7` thresholds in `common_include.h` (currently marked provisional — see Part 2). 0 means few/no stored contacts; 7 means at or above the highest threshold. The base station's `CONFIG_DSA_READOUT_LEVEL` gates connection attempts on this field.
+  - Bits 4-6 (mask `0x70`, shifted by `P_SHIFT_STATUS_BATTERY`): battery level 0-3, from `battery_voltage_status_from_mv()`. 0 = healthy (voltage at or above `BATTERY_LEVEL_1_THRESHOLD_MV`, default 3000 mV); 1 = below that; 2 = below `BATTERY_LEVEL_2_THRESHOLD_MV` (default 2800 mV); 3 = below `BATTERY_LEVEL_3_THRESHOLD_MV` (default 2600 mV, critical). Only values 0-3 are ever produced, so the top bit of this field (bit 6) is always 0 in practice.
+  - Bit 7 (`ECO_MODE_MASK`): 1 = tag is currently in eco/inactivity mode (set/cleared by `motion.c` on the configured inactivity timeout and on motion resuming).
 
 Archive every production release with the git commit, SDK version, board target, build command, generated hex/bin, and a short hardware acceptance log.
 

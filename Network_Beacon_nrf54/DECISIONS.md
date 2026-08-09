@@ -210,3 +210,59 @@ existing `STORAGE_FAULT_CONTACT_MASK`/`STORAGE_STATUS_CONTACT_ERROR` and
 conflation of contact/self-report storage faults under one status bit,
 rather than introducing a third inconsistency in a system already
 scheduled for a status-reporting redesign.
+
+## 2026-08-09: Advertised Status Byte Redesigned Around Field Diagnosability
+
+The status-reporting redesign deferred in the eco-log entry above happened
+now, driven by a specific framing: in production, a tag is worn/deployed in
+the field and the advertised status byte (`ADV_POS_RADIO_STATUS`) — readable
+by a passive BLE scan, no connection required — is the *only* diagnostic
+channel available. That reframes which bits are worth the 8 available:
+distinctions that don't change what a field technician would do (a scan
+runtime failure vs. a scan config failure; a storage record fault vs. a
+metadata fault) are worth less than currently-invisible conditions that mean
+"this tag needs physical attention."
+
+`STORAGE_FAULT_CONTACT_MASK`/`STORAGE_STATUS_CONTACT_ERROR`/
+`STORAGE_STATUS_META_ERROR` (referenced by name in the eco-log entry above)
+no longer exist. New layout in `device.h`/`shared/common_include.h`:
+
+- Bit 0 `RADIO_STATUS_SCAN_ERROR` (was two bits, `RADIO_STATUS_SCAN_RUNTIME_ERROR`
+  and `RADIO_STATUS_SCAN_CONFIG_ERROR`): both meant "not tracking contacts
+  right now" to an outside observer, so `radio.c` now tracks
+  `scan_runtime_fault`/`scan_config_fault` independently and ORs them into
+  one advertised bit via `radio_update_scan_status()` — kept as two internal
+  booleans specifically so one clearing doesn't clobber the other's state.
+- Bit 1 `RADIO_STATUS_NUS_ERROR`: unchanged. Ranked most severe of the
+  pre-existing bits on reflection — if set, the tag's data can never be
+  retrieved over BLE at all.
+- Bit 2 `STORAGE_STATUS_STORAGE_FULL` (new): contact/self-report/eco-log
+  storage is full and actively discarding its oldest un-exported entries.
+  This condition already existed as internal state
+  (`contact_nvm_full`/`ram_log_ring`'s `nvm_full`) purely to gate flush
+  retries, but was never surfaced — despite being real, ongoing data loss on
+  a device whose entire purpose is data collection. `device_set_storage_full()`
+  in `device.c` aggregates per-domain `STORAGE_FULL_*` bits the same way
+  `device_set_storage_fault()` already aggregated fault bits.
+- Bit 3 `STORAGE_STATUS_PARAM_ERROR`: unchanged position; mask now also
+  includes `STORAGE_FAULT_MOTION_PARAMS`. `motion.c` was the only one of the
+  four persisted-parameter domains (LED/network/radio/motion) that never
+  called `device_set_storage_fault()` — an oversight, not a deliberate
+  omission, closed here rather than left inconsistent.
+- Bit 4 `STORAGE_STATUS_STORAGE_ERROR` (was `STORAGE_STATUS_CONTACT_ERROR` +
+  `STORAGE_STATUS_META_ERROR`): merged, via `STORAGE_FAULT_STORAGE_MASK` now
+  including the three `*_META` fault bits alongside init/read/write/delete.
+  A record fault and a metadata fault both mean "the flash storage subsystem
+  is unhealthy" to someone who can only reach the tag over BLE.
+- Bit 5 `RADIO_STATUS_MOTION_UNAVAILABLE` (new): set once in `motion_init()`
+  from `motion_available`. If the ADXL367 fails `device_is_ready()` or
+  trigger setup, inactivity detection silently never runs and the tag is
+  permanently stuck in high-activity mode — a battery-life risk with no
+  prior visibility.
+- Bits 6-7: reserved.
+
+`self_report.c`/`eco_log.c` share a generic `ram_log_ring.c` module (this
+session's RAM-ring counterpart to `flash_ring_store.c`'s earlier dedup of
+the flash layer), so the new storage-full bit was wired once, via a
+`storage_full_bit` field on `ram_log_ring_config`, and both domains got it
+for free.

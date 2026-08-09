@@ -8,7 +8,6 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/util.h>
-//#include <bluetooth/scan.h>
 #include "common_include.h"
 #include "radio_ids.h"
 #include "network.h"
@@ -59,7 +58,6 @@
 static uint8_t mfg_data[] = { 0xff, 0x00, 0x00 };
 
 static const struct bt_data ad[] = {
-	//BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
 	BT_DATA(BT_DATA_NAME_COMPLETE, CONFIG_BT_DEVICE_NAME, strlen(CONFIG_BT_DEVICE_NAME)),
 	BT_DATA(BT_DATA_MANUFACTURER_DATA, mfg_data, sizeof(mfg_data)),
 };
@@ -97,6 +95,12 @@ static uint8_t last_applied_mode = HIGH_ACTIVITY;
 static struct bt_le_scan_param scan_params;
 static struct bt_le_adv_param adv_params;
 static bool advertising_initialized;
+/* Independently tracked so a runtime scan start/stop failure and a boot-time
+ * accept-list configuration failure don't clobber each other's state when
+ * both fold into the single advertised RADIO_STATUS_SCAN_ERROR bit.
+ */
+static bool scan_runtime_fault;
+static bool scan_config_fault;
 
 enum target_action {
     ACTION_NONE = 0,
@@ -136,6 +140,7 @@ static void eco_scan_handler(struct k_work *work);
 static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type,
 		    struct net_buf_simple *buf);
 static void radio_status_set_local(uint8_t mask, bool active);
+static void radio_update_scan_status(void);
 static void adv_prepare_status_data(void);
 static int adv_update_locked(void);
 static bool adv_interval_valid(uint16_t interval);
@@ -153,7 +158,7 @@ static K_MUTEX_DEFINE(radio_operation_lock);
 
 static uint8_t radio_apply_mode_locked(uint8_t mode);
 static int radio_params_validate(const struct radio_params *params);
-static int scan_init(void);
+static void scan_init(void);
 
 BUILD_ASSERT(CONFIG_DSA_ECO_SCAN_INTERVAL_MS % 1000 == 0,
 	     "Eco scan burst period must use whole seconds");
@@ -310,7 +315,8 @@ static uint8_t radio_apply_mode_locked(uint8_t mode)
 	err = bt_le_scan_stop();
 	if (err && err != -EALREADY) {
 		printk("Scan stop before mode change failed (err %d)\n", err);
-		radio_status_set_local(RADIO_STATUS_SCAN_RUNTIME_ERROR, true);
+		scan_runtime_fault = true;
+		radio_update_scan_status();
 		errors |= BLE_UPDATE_SCAN_ERROR;
 	}
 	eco_scan_burst_active = false;
@@ -341,7 +347,8 @@ static uint8_t radio_apply_mode_locked(uint8_t mode)
 	if (mode == ECO_ACTIVITY) {
 		scan_params.interval = params_radio.eco_scan_window;
 		scan_params.window = params_radio.eco_scan_window;
-		radio_status_set_local(RADIO_STATUS_SCAN_RUNTIME_ERROR, false);
+		scan_runtime_fault = false;
+		radio_update_scan_status();
 		k_work_reschedule(&eco_scan_work, K_NO_WAIT);
 	} else {
 		scan_params.interval = params_radio.scan_interval;
@@ -349,11 +356,12 @@ static uint8_t radio_apply_mode_locked(uint8_t mode)
 		err = bt_le_scan_start(&scan_params, scan_cb);
 		if (err && err != -EALREADY) {
 			printk("Scan start failed (err %d)\n", err);
-			radio_status_set_local(RADIO_STATUS_SCAN_RUNTIME_ERROR, true);
+			scan_runtime_fault = true;
 			errors |= BLE_UPDATE_SCAN_ERROR;
 		} else {
-			radio_status_set_local(RADIO_STATUS_SCAN_RUNTIME_ERROR, false);
+			scan_runtime_fault = false;
 		}
+		radio_update_scan_status();
 	}
 
 	if (!(errors & BLE_UPDATE_ADV_ERROR)) {
@@ -789,24 +797,26 @@ static int scan_ms_to_units(uint16_t milliseconds, uint16_t *units)
 	return 0;
 }
 
-static int scan_init(void)
+/* Adds every known device to the filter accept list. A failure on any single
+ * entry (e.g. the list is full) is reported via RADIO_STATUS_SCAN_ERROR but
+ * does not stop the loop or fail the caller: the remaining entries are still
+ * worth adding, and scanning proceeds in degraded mode with whichever
+ * devices made it in.
+ */
+static void scan_init(void)
 {
 	int err;
-	size_t failed_entries = 0;
 
+	scan_config_fault = false;
 	for (size_t i = 0; i < known_device_table_len; i++) {
 		err = bt_le_filter_accept_list_add(&known_device_table[i].addr);
 		if (err) {
 			printk("Failed to add device %u to filter list (err %d)\n", (unsigned int)i, err);
-			failed_entries++;
+			scan_config_fault = true;
 		}
 	}
 
-	if (failed_entries == known_device_table_len) {
-		return -ENODEV;
-	}
-
-	return 0;
+	radio_update_scan_status();
 }
 
 void adv_init(void)
@@ -858,6 +868,12 @@ static void radio_status_set_local(uint8_t mask, bool active)
 	device_set_radio_status_bit(mask, active);
 }
 
+static void radio_update_scan_status(void)
+{
+	radio_status_set_local(RADIO_STATUS_SCAN_ERROR,
+			       scan_runtime_fault || scan_config_fault);
+}
+
 static void adv_prepare_status_data(void)
 {
 	mfg_data[ADV_POS_RADIO_STATUS] = device_get_radio_status();
@@ -898,12 +914,7 @@ int radio_init(void)
 			set_radio_params_init();
 		}
 	}
-	err = scan_init();
-	if (err) {
-		radio_status_set_local(RADIO_STATUS_SCAN_CONFIG_ERROR, true);
-	} else {
-		radio_status_set_local(RADIO_STATUS_SCAN_CONFIG_ERROR, false);
-	}
+	scan_init();
 	adv_init();
 	return 0;
 }

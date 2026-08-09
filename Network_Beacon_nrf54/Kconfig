@@ -109,7 +109,7 @@ config DSA_NETWORK_STATUS_UPDATE_DELAY_MS
 
 config DSA_NETWORK_FLUSH_THRESHOLD
 	int "RAM contact count that starts flash flushing"
-	default 23000
+	default 23700
 	range 1 65535
 
 config DSA_NETWORK_FLASH_SIZE_BYTES
@@ -204,7 +204,7 @@ menu "DSA NUS transport"
 
 config DSA_NUS_IDLE_TIMEOUT_MS
 	int "NUS connection idle timeout in milliseconds"
-	default 20000
+	default 5000
 	range 1000 600000
 
 endmenu
@@ -231,7 +231,7 @@ config DSA_ECO_LOG_RING_COUNT
 
 config DSA_ECO_LOG_FLUSH_THRESHOLD
 	int "Eco log RAM flush threshold"
-	default 32
+	default 63
 	range 2 65535
 	help
 	  Start moving the oldest eco sessions to flash when this many
@@ -272,7 +272,7 @@ config DSA_SELF_REPORT_RING_COUNT
 
 config DSA_SELF_REPORT_FLUSH_THRESHOLD
 	int "Self-report RAM flush threshold"
-	default 75
+	default 254
 	range 2 65535
 	help
 	  Start moving the oldest reports to flash when this many reports

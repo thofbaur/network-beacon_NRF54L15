@@ -28,6 +28,7 @@ target_sources(app PRIVATE
 	src/device.c
 	src/eco_log.c
 	src/eco_log_storage.c
+	src/flash_ring_store.c
 	src/led.c
 	src/main.c
 	src/motion.c
@@ -37,6 +38,7 @@ target_sources(app PRIVATE
 	src/param_storage.c
 	src/radio.c
 	src/radio_ids.c
+	src/ram_log_ring.c
 	src/self_report.c
 	src/self_report_storage.c
 	src/storage_work_queue.c

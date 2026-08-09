@@ -406,6 +406,7 @@ static void network_flush_handler(struct k_work *work)
 	if (err) {
 		if (err == -ENOSPC) {
 			contact_nvm_full = true;
+			device_set_storage_full(STORAGE_FULL_CONTACT, true);
 		}
 		contact_flush_active = false;
 		contact_flush_entries = 0;
@@ -661,6 +662,7 @@ int network_contact_export_commit(void)
 		}
 		if (!err) {
 			contact_nvm_full = false;
+			device_set_storage_full(STORAGE_FULL_CONTACT, false);
 		}
 		break;
 	case CONTACT_EXPORT_RAM:

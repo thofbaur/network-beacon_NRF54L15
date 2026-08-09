@@ -12,6 +12,7 @@ struct device_status {
 
 static struct device_status status_device;
 static atomic_t storage_faults;
+static atomic_t storage_full;
 
 uint8_t lookup_device_id(const bt_addr_le_t *addr)
 {
@@ -75,12 +76,8 @@ void device_set_storage_fault(uint32_t fault, bool active)
 	faults = atomic_get(&storage_faults);
 	device_set_radio_status_bit(STORAGE_STATUS_PARAM_ERROR,
 				    (faults & STORAGE_FAULT_PARAM_MASK) != 0);
-	device_set_radio_status_bit(STORAGE_STATUS_CONTACT_ERROR,
-				    (faults & STORAGE_FAULT_CONTACT_MASK) != 0);
-	device_set_radio_status_bit(STORAGE_STATUS_META_ERROR,
-				    (faults & (STORAGE_FAULT_CONTACT_META |
-					       STORAGE_FAULT_SELF_REPORT_META |
-					       STORAGE_FAULT_ECO_LOG_META)) != 0);
+	device_set_radio_status_bit(STORAGE_STATUS_STORAGE_ERROR,
+				    (faults & STORAGE_FAULT_STORAGE_MASK) != 0);
 
 	if (device_get_radio_status() != previous) {
 		radio_schedule_status_update();
@@ -90,6 +87,30 @@ void device_set_storage_fault(uint32_t fault, bool active)
 uint32_t device_get_storage_faults(void)
 {
 	return (uint32_t)atomic_get(&storage_faults);
+}
+
+void device_set_storage_full(uint32_t domain, bool active)
+{
+	atomic_val_t full;
+	uint8_t previous = device_get_radio_status();
+
+	if (active) {
+		atomic_or(&storage_full, domain);
+	} else {
+		atomic_and(&storage_full, (atomic_val_t)~domain);
+	}
+
+	full = atomic_get(&storage_full);
+	device_set_radio_status_bit(STORAGE_STATUS_STORAGE_FULL, full != 0);
+
+	if (device_get_radio_status() != previous) {
+		radio_schedule_status_update();
+	}
+}
+
+uint32_t device_get_storage_full(void)
+{
+	return (uint32_t)atomic_get(&storage_full);
 }
 
 uint8_t device_get_network_status(void)

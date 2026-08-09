@@ -50,21 +50,6 @@ const struct known_device known_device_table[] = {
         },
         .id = 5,
     },
-
-/*    {
-        .addr = {
-            .type = BT_ADDR_LE_RANDOM,
-            .a = { .val = { 0x2D, 0xFF, 0x12, 0xB9, 0x17, 0xC8 } }  // altes nrf51822 beacon
-        },
-        .id = 104,
-    },
-    {
-        .addr = {
-            .type = BT_ADDR_LE_RANDOM,
-            .a = { .val = { 0xFB, 0x3A, 0xE1, 0xE2, 0xD7, 0xCF } }  // altes nrf51422 dev kit
-        },
-        .id = 0,
-    },*/
 };
 
 const size_t known_device_table_len =

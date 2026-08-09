@@ -151,6 +151,8 @@ int motion_init(void)
 	printk("Board provides no motion sensor; inactivity detection disabled\n");
 #endif
 
+	device_set_radio_status_bit(RADIO_STATUS_MOTION_UNAVAILABLE, !motion_available);
+
 	k_mutex_lock(&motion_lock, K_FOREVER);
 	motion_reschedule_timer_locked();
 	k_mutex_unlock(&motion_lock);
@@ -226,25 +228,35 @@ int motion_params_load(void)
 	int err;
 
 	err = param_storage_load(MOTION_PARAMS_STORAGE_KEY, stored, sizeof(stored));
+	if (err == -ENOENT) {
+		device_set_storage_fault(STORAGE_FAULT_MOTION_PARAMS, false);
+		return err;
+	}
 	if (err) {
+		device_set_storage_fault(STORAGE_FAULT_MOTION_PARAMS, true);
 		return err;
 	}
 
 	if (stored[0] > 1U || sys_get_be16(&stored[1]) == 0U) {
+		device_set_storage_fault(STORAGE_FAULT_MOTION_PARAMS, true);
 		return -EBADMSG;
 	}
 
 	params_motion.active = stored[0] != 0U;
 	params_motion.timeout_s = sys_get_be16(&stored[1]);
+	device_set_storage_fault(STORAGE_FAULT_MOTION_PARAMS, false);
 	return 0;
 }
 
 int motion_params_save(void)
 {
 	uint8_t stored[MOTION_PARAMS_STORED_SIZE];
+	int err;
 
 	stored[0] = params_motion.active ? 1U : 0U;
 	sys_put_be16(params_motion.timeout_s, &stored[1]);
 
-	return param_storage_save(MOTION_PARAMS_STORAGE_KEY, stored, sizeof(stored));
+	err = param_storage_save(MOTION_PARAMS_STORAGE_KEY, stored, sizeof(stored));
+	device_set_storage_fault(STORAGE_FAULT_MOTION_PARAMS, err != 0);
+	return err;
 }
