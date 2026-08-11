@@ -23,9 +23,10 @@ static void button_handler(uint32_t button_state, uint32_t has_changed)
 	}
 }
 
-static void on_radio_connected(struct bt_conn *conn, uint8_t beacon_id)
+static void on_radio_connected(struct bt_conn *conn, uint8_t beacon_id,
+			       uint8_t status)
 {
-	nus_on_connected(conn, beacon_id);
+	nus_on_connected(conn, beacon_id, status);
 }
 
 static void on_radio_disconnected(void)

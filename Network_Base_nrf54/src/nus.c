@@ -10,6 +10,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
+#include "common_include.h"
 #include "message_parser.h"
 #include "output.h"
 
@@ -20,6 +21,7 @@ LOG_MODULE_DECLARE(network_base);
 #define NUS_RX_IDLE_TIMEOUT K_SECONDS(10)
 #define NUS_RAW_PREFIX_LEN 3
 #define NUS_RAW_SUFFIX_LEN 2
+#define NUS_CONNECT_STATUS_LEN 1
 
 static struct bt_nus_client nus_client;
 static nus_finished_cb_t finished_cb;
@@ -190,13 +192,30 @@ int nus_init(nus_finished_cb_t cb)
 	return 0;
 }
 
-void nus_on_connected(struct bt_conn *conn, uint8_t beacon_id)
+static void send_connect_status(uint8_t beacon_id, uint8_t status)
+{
+#if defined(DSA_OUTPUT_FORMAT_RAW)
+	uint8_t raw_data[NUS_RAW_PREFIX_LEN + 1 + NUS_CONNECT_STATUS_LEN +
+			 NUS_RAW_SUFFIX_LEN] = {
+		'I', 'D', beacon_id, DSA_NUS_FLAG_CONNECT_STATUS, status,
+		'\r', '\n'
+	};
+
+	output_data(raw_data, sizeof(raw_data));
+#else
+	output_messagef("ID: %u, Status: %u", beacon_id, status);
+#endif
+}
+
+void nus_on_connected(struct bt_conn *conn, uint8_t beacon_id, uint8_t status)
 {
 	int err;
 
 	current_beacon_id = beacon_id;
 	message_parser_reset();
 	rx_idle_timeout_restart();
+
+	send_connect_status(beacon_id, status);
 
 	err = bt_gatt_dm_start(conn, BT_UUID_NUS_SERVICE, &discovery_cb,
 			       &nus_client);

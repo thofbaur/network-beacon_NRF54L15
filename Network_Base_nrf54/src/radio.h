@@ -6,7 +6,8 @@
 
 #include <zephyr/bluetooth/conn.h>
 
-typedef void (*radio_connected_cb_t)(struct bt_conn *conn, uint8_t beacon_id);
+typedef void (*radio_connected_cb_t)(struct bt_conn *conn, uint8_t beacon_id,
+				     uint8_t status);
 typedef void (*radio_disconnected_cb_t)(void);
 
 struct radio_callbacks {

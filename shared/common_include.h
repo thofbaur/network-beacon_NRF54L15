@@ -10,6 +10,13 @@
 #define DSA_NUS_FLAG_SELF_REPORT		0x06
 #define DSA_NUS_FLAG_ECO_LOG			0x07
 
+/* Synthesized by Network_Base_nrf54 itself on connect, from the advertised
+ * fault/error status byte (ADV_POS_RADIO_STATUS) rather than a beacon-sent
+ * NUS notification. Framed like a regular NUS message so the raw log parser
+ * (dsa_logger.py) can decode it the same way.
+ */
+#define DSA_NUS_FLAG_CONNECT_STATUS		0x08
+
 /* Manufacturer-data byte positions. */
 #define ADV_POS_ID 0
 #define ADV_POS_RADIO_STATUS 1

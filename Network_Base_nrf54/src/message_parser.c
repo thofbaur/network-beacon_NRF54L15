@@ -72,7 +72,7 @@ static void handle_time_package(uint8_t beacon_id, const uint8_t *data)
 {
 	uint32_t timer = uint32_be_decode(data);
 
-	output_messagef("ID:%u Current Timer:%u", beacon_id, timer);
+	output_messagef("ID: %u Current Timer:%u", beacon_id, timer);
 }
 
 static void handle_time_contact_voltage_package(uint8_t beacon_id,
@@ -82,7 +82,7 @@ static void handle_time_contact_voltage_package(uint8_t beacon_id,
 	uint32_t contact_count = uint24_be_decode(&data[4]);
 	uint16_t voltage = uint16_be_decode(&data[7]);
 
-	output_messagef("ID:%u Current Timer:%u Contact Count:%u Voltage:%u",
+	output_messagef("ID: %u Current Timer: %u Contact Count: %u Voltage: %u",
 			beacon_id, timer, contact_count, voltage);
 }
 
@@ -92,7 +92,7 @@ static void handle_data_package(uint8_t beacon_id, const uint8_t *data)
 	uint32_t timer = uint24_be_decode(&data[1]);
 	uint8_t negative_rssi = data[4];
 
-	output_messagef("ID:%u Contact-ID:%u Timer:%u RSSI:-%u", beacon_id,
+	output_messagef("ID: %u Contact-ID: %u Timer: %u RSSI: -%u", beacon_id,
 			contact_id, timer, negative_rssi);
 }
 
@@ -120,7 +120,7 @@ static void handle_voltage_package(uint8_t beacon_id, const uint8_t *data)
 {
 	uint16_t voltage = uint16_be_decode(data);
 
-	output_messagef("ID:%u VOLTAGE:%u", beacon_id, voltage);
+	output_messagef("ID: %u VOLTAGE: %u", beacon_id, voltage);
 }
 
 static void handle_self_report_block(uint8_t beacon_id, const uint8_t *data,
@@ -141,7 +141,7 @@ static void handle_self_report_block(uint8_t beacon_id, const uint8_t *data,
 			&data[DSA_SELF_REPORT_COUNT_LEN +
 			      (i * DSA_SELF_REPORT_SET_LEN)]);
 
-		output_messagef("ID:%u  Self-report time: %u", beacon_id,
+		output_messagef("ID: %u  Self-report time: %u", beacon_id,
 				timer);
 	}
 }
@@ -165,7 +165,7 @@ static void handle_eco_log_block(uint8_t beacon_id, const uint8_t *data,
 		uint32_t enter_time = uint24_be_decode(entry);
 		uint32_t leave_time = uint24_be_decode(&entry[3]);
 
-		output_messagef("ID:%u Eco session enter:%u leave:%u",
+		output_messagef("ID: %u Eco session enter: %u leave: %u",
 				beacon_id, enter_time, leave_time);
 	}
 }
@@ -173,7 +173,7 @@ static void handle_eco_log_block(uint8_t beacon_id, const uint8_t *data,
 static void handle_control_package(uint8_t beacon_id, const uint8_t *data)
 {
 	if (memcmp(data, "finished", DSA_CONTROL_LEN) == 0) {
-		output_messagef("ID:%u Transfer complete. Disconnecting",
+		output_messagef("ID: %u Transfer complete. Disconnecting",
 				beacon_id);
 
 		LOG_INF("Received finished control package");
@@ -191,11 +191,11 @@ static void handle_default_package(uint8_t beacon_id, const uint8_t *data,
 	size_t pos;
 
 	if (len == 0) {
-		output_messagef("ID:%u DEFAULT uint8=<empty>", beacon_id);
+		output_messagef("ID: %u DEFAULT uint8=<empty>", beacon_id);
 		return;
 	}
 
-	pos = snprintk(message, sizeof(message), "ID:%u DEFAULT uint8=",
+	pos = snprintk(message, sizeof(message), "ID: %u DEFAULT uint8=",
 		       beacon_id);
 
 	for (size_t i = 0; (i < len) && (pos < sizeof(message)); i++) {

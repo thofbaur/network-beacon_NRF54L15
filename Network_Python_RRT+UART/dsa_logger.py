@@ -46,6 +46,7 @@ DSA_NUS_FLAGS = {
     0x05: "DSA_NUS_FLAG_TIME_CONTACTS_VOLTAGE",
     0x06: "DSA_NUS_FLAG_SELF_REPORT",
     0x07: "DSA_NUS_FLAG_ECO_LOG",
+    0x08: "DSA_NUS_FLAG_CONNECT_STATUS",
 }
 DSA_NUS_FLAG_TIME = 0x01
 DSA_NUS_FLAG_DATA = 0x02
@@ -54,11 +55,17 @@ DSA_NUS_FLAG_CONTROL = 0x04
 DSA_NUS_FLAG_TIME_CONTACTS_VOLTAGE = 0x05
 DSA_NUS_FLAG_SELF_REPORT = 0x06
 DSA_NUS_FLAG_ECO_LOG = 0x07
+# Synthesized by Network_Base_nrf54 on connect from the advertised
+# fault/error status byte (ADV_POS_RADIO_STATUS), not sent by the beacon as
+# a real NUS notification. Framed the same way so it decodes through the
+# same raw-message path.
+DSA_NUS_FLAG_CONNECT_STATUS = 0x08
 DSA_NUS_PAYLOAD_LENGTHS = {
     DSA_NUS_FLAG_TIME: 4,
     DSA_NUS_FLAG_VOLTAGE: 2,
     DSA_NUS_FLAG_CONTROL: 8,
     DSA_NUS_FLAG_TIME_CONTACTS_VOLTAGE: 9,
+    DSA_NUS_FLAG_CONNECT_STATUS: 1,
 }
 
 
@@ -387,7 +394,7 @@ class LogOutput:
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         for line in message.output_lines:
-            self._file.write(f"{timestamp},ID:{message.beacon_id},{line}\n")
+            self._file.write(f"{timestamp},ID: {message.beacon_id},{line}\n")
         self._file.flush()
 
     def close(self) -> None:
@@ -419,6 +426,8 @@ def parse_payload(flag_value: int, payload: bytes, raw_message: bytes) -> tuple[
         return parse_eco_log_payload(payload)
     if flag_value == DSA_NUS_FLAG_SELF_REPORT:
         return parse_self_report_payload(payload)
+    if flag_value == DSA_NUS_FLAG_CONNECT_STATUS:
+        return (f"Status: {payload[0]}",)
     return ()
 
 

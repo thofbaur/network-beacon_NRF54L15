@@ -43,7 +43,9 @@ static bool connect_in_progress;
 static bool nus_ready_notified;
 static bool transfer_finish_pending;
 static uint8_t pending_beacon_id;
+static uint8_t pending_beacon_status;
 static uint8_t connected_beacon_id;
+static uint8_t connected_beacon_status;
 static const struct bt_le_conn_param dsa_conn_param =
 	BT_LE_CONN_PARAM_INIT(DSA_CONN_INTERVAL_MIN, DSA_CONN_INTERVAL_MAX,
 			      DSA_CONN_LATENCY, DSA_CONN_TIMEOUT);
@@ -243,6 +245,7 @@ static void scan_recv(const struct bt_le_scan_recv_info *info,
 	led_set_scanning(false);
 	connect_in_progress = true;
 	pending_beacon_id = adv.id;
+	pending_beacon_status = adv.radio_status;
 
 	LOG_INF("Creating connection with interval=%u-%u (%u-%u us) latency=%u timeout=%u ms",
 		dsa_conn_param.interval_min, dsa_conn_param.interval_max,
@@ -277,7 +280,7 @@ static void notify_ready_for_nus(struct bt_conn *conn)
 	log_conn_throughput_state(conn, "NUS start");
 
 	if (radio_cb.connected) {
-		radio_cb.connected(conn, connected_beacon_id);
+		radio_cb.connected(conn, connected_beacon_id, connected_beacon_status);
 	}
 }
 
@@ -370,6 +373,7 @@ static void connected(struct bt_conn *conn, uint8_t conn_err)
 	LOG_INF("Connected: %s", addr);
 	led_set_connected(true);
 	connected_beacon_id = pending_beacon_id;
+	connected_beacon_status = pending_beacon_status;
 	nus_ready_notified = false;
 	log_conn_throughput_state(conn, "Connected initial");
 	request_link_throughput_updates(conn);
