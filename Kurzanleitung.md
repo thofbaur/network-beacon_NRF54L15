@@ -21,30 +21,12 @@ Kombitest:
 - Build Konfiguration für das DK erstellen.
 - Putty (oder vergleichbaren Seriellen Leser) mit dem DK verbinden. Der COMport kann in Visual Studio unter connected Devices abgelesen werden. Hier sind 2 angegeben, einer ist für die sichere Partition, der andere der relevante. Geschwindigkeit 112500 
 - Dann flashen. Es sollte u.a. eine Meldung erscheinen "Network Base ready. Press button0 to scan
-- Button0 am DK drücken. in der Konsole sollten die übermittelten Daten erscheinen.
+- Button0 am DK drücken. in der Konsole sollten die übermittelten Daten erscheinen
 
-# Mögliche ToDos:
-- Erfassen aller Adressen
-  Möglichkeit 1:
-  - Ablesen aller Addressen von den Tags (unter der Batterie)
-  Möglichkeit 2:
-  - Aktivierung des Logs in der nRF Connect App (Smartphone oder Notebook) und Anschalten aller Beacons. Sie sollten erkannt werden und die Adresse geloggt. Ein Filter auf den Namen "Nordic LBS" schafft Klarheit
-  Möglichkeit 3:
-  - Umschreiben der Network_Base, so dass sie Devices mit dem Namen "Nordic LBS" verbindet. Dabei wird auf die Adresse auf die Konsole geschrieben (dafür muss Putty loggen)
-  WICHTIG: Die so ermittelte Adresse muss in umgekehrter Reihenfolge in radio_ids.c geschrieben werden.
-- Stromverbrauch:
-  - Tag flashen und eingeschaltet lassen. Wie lange lebt es mit dem Code?
-- Aufzeichnen verschiedener Abstände und mit Hindernissen -> Vergleich der RSSI
-- Programmierung einer Python App die direkt auf dem Notebook läuft, sich verbindet und die Daten speichert.
-
-# Impementierung ToDos:
-- Spannungsmessung
-- Beschleunigungsmessung
-- Optional: Entfernungsbestimmung
-- Optimierung: 
-  - Maximierung NUS Transfer
-  - Minimierung geschriebene Zeichen in Log
-  - Auflösen aller ToDos im Code
-	
-
-
+# Parameter setzen (Network_Control_nrf54)
+- Für ein weiteres DK den Ordner Network_Control_nrf54 öffnen
+- Build Konfiguration wie beim Basistest (Board Target nrf54l15dk/nrf54l15/cpuapp/ns)
+- In src/main.c im Array mfg_data die gewünschte Parameterzeile einkommentieren und den Wert anpassen (mehrere Zeilen gleichzeitig möglich)
+- Flashen
+- Button 3 am DK startet das Aussenden des Befehls (Name "DSZ"), Button 4 stoppt es wieder
+- WICHTIG: Die Adresse dieses DK muss ebenfalls in radio_ids.c im Tag/Beacon-Code eingetragen sein (wie bei den Tags, s.o.), sonst wird der Befehl von den Tags ignoriert, ohne dass irgendeine Meldung erscheint (Accept-List-Filter beim Scannen)

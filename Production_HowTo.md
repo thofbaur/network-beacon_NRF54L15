@@ -4,6 +4,7 @@ This repo contains the production workflow for a DSA BLE beacon system:
 
 - `Network_Beacon_nrf54`: firmware for nRF54L15 tags/beacons.
 - `Network_Base_nrf54`: firmware for an nRF54L15 Development Kit used as the readout base station.
+- `Network_Control_nrf54`: firmware for an nRF54L15 DK used to send runtime configuration commands to tags (button-triggered `DSZ` advertisements).
 - `Network_Python_RRT+UART`: PC logger for base-station output via UART or SEGGER RTT.
 - `shared/common_include.h`: shared wire/protocol constants. Treat changes here as protocol changes.
 
@@ -31,6 +32,7 @@ Connect hardware as follows:
 - For bench testing tag firmware on a DK, connect the nRF54L15 DK over USB.
 - For the base station, connect one nRF54L15 DK over USB. Use the COM port shown by VS Code/nRF Connect or Windows Device Manager. The default UART speed is `115200`.
 - If RTT logging is used, keep the J-Link connection attached and use RTT device `nRF54L15_M33`.
+- For sending runtime configuration commands, connect one nRF54L15 DK over USB and flash it with `Network_Control_nrf54`. This device is only needed when a parameter must be changed; it is not part of routine data collection.
 
 The main production artifacts are one programmed tag population and one programmed base station DK. The base station is the device connected to the PC during data collection.
 
@@ -42,6 +44,7 @@ Before flashing production tags, set the production identity table in `Network_B
 2. Add every production address to `known_device_table`.
 3. Store addresses in the byte order used by Zephyr's `bt_addr_le_t` initializer. The existing `Kurzanleitung.md` notes that discovered addresses must be entered in reverse order.
 4. Assign each tag a stable one-byte ID. Unknown devices advertise ID `0xff`, which is useful for bench tests but not for production records.
+5. If runtime configuration commands need to reach tags, also add the `Network_Control_nrf54` board's BLE address to `known_device_table` (the two existing "Developmentkit" entries are examples). Tags scan with `BT_LE_SCAN_OPT_FILTER_ACCEPT_LIST`, so a command advertisement from an address not in this table is dropped by the controller before the firmware ever sees it — silently, with no log output on either side.
 
 Review these parameters before building a production release:
 
@@ -141,6 +144,8 @@ The logger writes `dsa_YYYYMMDD_HHMM.log` in the current directory. Parsed lines
 A successful export consumes stored contact and self-report data on the beacon. If a transfer is interrupted, already acknowledged entries from a partial flash block can be resent because checkpointing is intentionally deferred to reduce flash writes.
 
 Runtime configuration is possible through BLE command advertisements named `DST`/`DSZ`; normal `DSA` advertisements are treated as contact beacons. Command manufacturer data starts with a target byte, followed by one or more 3-byte parameter records: parameter ID plus big-endian 16-bit value. Target `0xff` broadcasts to all tags; otherwise the target must match the tag ID.
+
+`Network_Control_nrf54` is the tool that sends these commands in the field. Its `src/main.c` lists every supported parameter, commented out, in a `mfg_data` array; edit that file to uncomment the parameter(s) to send and set their values, then reflash. Button 3 starts advertising the command (name `DSZ`), Button 4 stops it — the command stays active, and every listening tag applies it, for as long as advertising runs. See `Network_Control_nrf54/README.rst` for details. Remember its address must be in the target tags' `known_device_table` (Part 2) or the command is never received.
 
 Supported persistent runtime parameters:
 
