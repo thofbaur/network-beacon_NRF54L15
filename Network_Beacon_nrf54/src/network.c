@@ -266,6 +266,10 @@ int network_params_load(void)
 
 	err = param_storage_load_legacy(NETWORK_PARAMS_STORAGE_KEY,
 					&legacy_rssi, sizeof(legacy_rssi));
+	if (err == -ENOENT) {
+		device_set_storage_fault(STORAGE_FAULT_NETWORK_PARAMS, false);
+		return err;
+	}
 	if (err) {
 		device_set_storage_fault(STORAGE_FAULT_NETWORK_PARAMS, true);
 		return err;

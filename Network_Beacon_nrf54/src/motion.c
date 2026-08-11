@@ -4,6 +4,7 @@
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/sensor.h>
+#include <zephyr/init.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/printk.h>
@@ -18,11 +19,48 @@
 #define MOTION_PARAMS_STORAGE_KEY "dsa/motion"
 #define MOTION_PARAMS_STORED_SIZE 3U
 
+/* device_is_ready() only reflects Zephyr's boot-time driver init result, not
+ * a live probe - it can't recover on its own if the ADXL367 wasn't
+ * powered/settled yet when that ran, which happens on a genuine power-cycle
+ * (a debugger-triggered reset leaves the sensor rail already warm from the
+ * prior session). sensor_trigger_set() does talk to the hardware live, so
+ * retry the whole bring-up sequence - readiness check and trigger setup -
+ * for a bounded window instead of giving up after one attempt.
+ */
+#define MOTION_SENSOR_READY_RETRY_MS 20
+#define MOTION_SENSOR_READY_TIMEOUT_MS 500
+
 #if DT_HAS_ALIAS(motion_detector)
 #define MOTION_SENSOR_NODE DT_ALIAS(motion_detector)
 #define MOTION_SENSOR_PRESENT 1
 #else
 #define MOTION_SENSOR_PRESENT 0
+#endif
+
+#if MOTION_SENSOR_PRESENT
+/* The ADXL367 Zephyr driver probes the chip exactly once, automatically,
+ * from its own POST_KERNEL init at CONFIG_SENSOR_INIT_PRIORITY - well
+ * before main()/motion_init() ever runs, and before the sensor's VDD rail
+ * has necessarily settled on a genuine power-cycle (a debugger-triggered
+ * reset never drops that rail, so it never hits this window). If that one
+ * probe fails, device_is_ready() is latched false for the rest of the
+ * session with no application-level way to retry it. Run a plain blocking
+ * delay at a lower POST_KERNEL priority so it executes first, giving the
+ * rail time to settle before the driver's probe runs at all.
+ */
+#define MOTION_SENSOR_BOOT_DELAY_MS 50
+#define MOTION_SENSOR_BOOT_DELAY_PRIORITY 10
+
+BUILD_ASSERT(MOTION_SENSOR_BOOT_DELAY_PRIORITY < CONFIG_SENSOR_INIT_PRIORITY,
+	    "Motion sensor boot delay must run before the sensor driver's own init");
+
+static int motion_sensor_boot_delay(void)
+{
+	k_msleep(MOTION_SENSOR_BOOT_DELAY_MS);
+	return 0;
+}
+
+SYS_INIT(motion_sensor_boot_delay, POST_KERNEL, MOTION_SENSOR_BOOT_DELAY_PRIORITY);
 #endif
 
 struct motion_state_params {
@@ -131,21 +169,35 @@ int motion_init(void)
 	}
 
 #if MOTION_SENSOR_PRESENT
-	if (!device_is_ready(motion_sensor)) {
-		printk("Motion sensor device not ready\n");
-	} else {
-		struct sensor_trigger trig = {
-			.type = SENSOR_TRIG_THRESHOLD,
-			.chan = SENSOR_CHAN_ACCEL_XYZ,
-		};
+	int64_t motion_sensor_retry_deadline = k_uptime_get() + MOTION_SENSOR_READY_TIMEOUT_MS;
+	int motion_sensor_err;
 
-		err = sensor_trigger_set(motion_sensor, &trig, motion_trigger_handler);
-		if (err) {
-			printk("Motion sensor trigger setup failed (err %d)\n", err);
+	for (;;) {
+		if (!device_is_ready(motion_sensor)) {
+			motion_sensor_err = -ENODEV;
 		} else {
+			struct sensor_trigger trig = {
+				.type = SENSOR_TRIG_THRESHOLD,
+				.chan = SENSOR_CHAN_ACCEL_XYZ,
+			};
+
+			motion_sensor_err = sensor_trigger_set(motion_sensor, &trig,
+							       motion_trigger_handler);
+		}
+
+		if (!motion_sensor_err) {
 			motion_available = true;
 			printk("Motion sensor initialized\n");
+			break;
 		}
+
+		if (k_uptime_get() >= motion_sensor_retry_deadline) {
+			printk("Motion sensor bring-up failed (err %d) after %d ms\n",
+			       motion_sensor_err, MOTION_SENSOR_READY_TIMEOUT_MS);
+			break;
+		}
+
+		k_sleep(K_MSEC(MOTION_SENSOR_READY_RETRY_MS));
 	}
 #else
 	printk("Board provides no motion sensor; inactivity detection disabled\n");
