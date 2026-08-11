@@ -13,6 +13,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Optional
 
+import postprocessing
+
 
 DEFAULT_UART_PORT = "COM11"
 DEFAULT_UART_BAUD = 115200
@@ -67,6 +69,10 @@ DSA_NUS_PAYLOAD_LENGTHS = {
     DSA_NUS_FLAG_TIME_CONTACTS_VOLTAGE: 9,
     DSA_NUS_FLAG_CONNECT_STATUS: 1,
 }
+# Sent by the beacon as the last CONTROL package of a transfer, right before
+# Network_Base_nrf54 disconnects it (see radio.c DSA_FINISH_DISCONNECT_DELAY).
+# The only signal a "successful transfer" leaves in the byte stream.
+DSA_CONTROL_FINISHED_PAYLOAD = b"finished"
 
 
 class InputSource(ABC):
@@ -428,6 +434,10 @@ def parse_payload(flag_value: int, payload: bytes, raw_message: bytes) -> tuple[
         return parse_self_report_payload(payload)
     if flag_value == DSA_NUS_FLAG_CONNECT_STATUS:
         return (f"Status: {payload[0]}",)
+    if flag_value == DSA_NUS_FLAG_CONTROL:
+        if payload == DSA_CONTROL_FINISHED_PAYLOAD:
+            return ("Transfer complete. Disconnecting",)
+        return ()
     return ()
 
 
@@ -512,7 +522,12 @@ def build_input_source(args: argparse.Namespace) -> InputSource:
     return RttInput(args.rtt_device, args.rtt_channel, args.rtt_interface, args.rtt_speed)
 
 
-def run_logger(input_source: InputSource, parser: MessageParser, output: LogOutput) -> None:
+def run_logger(
+    input_source: InputSource,
+    parser: MessageParser,
+    output: LogOutput,
+    post_processor: Optional[postprocessing.IncrementalPostProcessor] = None,
+) -> None:
     input_source.open()
     output.open()
 
@@ -526,6 +541,12 @@ def run_logger(input_source: InputSource, parser: MessageParser, output: LogOutp
 
             for message in parser.feed(data):
                 output.write_message(message)
+                if (
+                    post_processor is not None
+                    and message.flag_value == DSA_NUS_FLAG_CONTROL
+                    and message.payload == DSA_CONTROL_FINISHED_PAYLOAD
+                ):
+                    run_post_processing(post_processor, message.beacon_id)
     except KeyboardInterrupt:
         trailing_message = parser.flush()
         if trailing_message is not None:
@@ -534,6 +555,21 @@ def run_logger(input_source: InputSource, parser: MessageParser, output: LogOutp
     finally:
         output.close()
         input_source.close()
+
+
+def run_post_processing(post_processor: postprocessing.IncrementalPostProcessor, beacon_id: str) -> None:
+    try:
+        processed = post_processor.process()
+    except OSError as exc:
+        print(f"Post-processing failed after ID {beacon_id} transfer: {exc}", file=sys.stderr)
+        return
+
+    if processed:
+        print(
+            f"Post-processed transfer from ID {beacon_id} "
+            f"({len(post_processor.summaries)} beacons, {len(post_processor.contacts)} contacts, "
+            f"{len(post_processor.self_reports)} self-reports, {len(post_processor.eco_sessions)} eco sessions)"
+        )
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -577,9 +613,16 @@ def main(argv: list[str]) -> int:
         args.omit_timestamped_lines,
     )
     output = LogOutput(Path.cwd())
+    post_processor = postprocessing.IncrementalPostProcessor(
+        output.directory,
+        output.directory / postprocessing.DEFAULT_SUMMARY_CSV,
+        output.directory / postprocessing.DEFAULT_CONTACTS_CSV,
+        output.directory / postprocessing.DEFAULT_SELF_REPORTS_CSV,
+        output.directory / postprocessing.DEFAULT_ECO_SESSIONS_CSV,
+    )
 
     try:
-        run_logger(input_source, message_parser, output)
+        run_logger(input_source, message_parser, output, post_processor)
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
