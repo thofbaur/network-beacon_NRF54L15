@@ -18,6 +18,13 @@ const struct known_device known_device_table[] = {
         {
         .addr = {
             .type = BT_ADDR_LE_RANDOM,
+            .a = { .val = { 0xEB, 0xD5, 0x00, 0xBA, 0x1A, 0xE2 } }  // Developmentkit 1057743183
+        },
+        .id = 253,
+    },
+    {
+        .addr = {
+            .type = BT_ADDR_LE_RANDOM,
             .a = { .val = { 0x97, 0x57, 0xAF, 0xEF, 0xE9, 0xF7 } }  // Tag
         },
         .id = 1,
