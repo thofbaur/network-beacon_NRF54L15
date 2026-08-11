@@ -57,6 +57,16 @@ int param_storage_load(const char *key, void *data, size_t len)
 	if (loaded < 0) {
 		return loaded;
 	}
+	/* CONFIG_SETTINGS_NVS has no csi_load_one, so settings_load_one()
+	 * falls back to the generic csi_load() path in settings_store.c: it
+	 * walks every stored entry looking for a name match and, finding
+	 * none, returns 0 (success) rather than a negative errno. A real
+	 * saved record is never 0 bytes (param_storage_save() rejects
+	 * len == 0), so this can only mean the key was never saved.
+	 */
+	if (loaded == 0) {
+		return -ENOENT;
+	}
 
 	if ((size_t)loaded != PARAM_STORAGE_HEADER_SIZE + len ||
 	    sys_get_be32(&record[0]) != PARAM_STORAGE_MAGIC ||
@@ -98,6 +108,12 @@ int param_storage_load_legacy(const char *key, void *data, size_t len)
 	loaded = settings_load_one(key, legacy, len + 1U);
 	if (loaded < 0) {
 		return (int)loaded;
+	}
+	/* See the matching comment in param_storage_load(): under
+	 * CONFIG_SETTINGS_NVS, "key not found" is a 0 return, not negative.
+	 */
+	if (loaded == 0) {
+		return -ENOENT;
 	}
 	if ((size_t)loaded != len) {
 		return -EINVAL;

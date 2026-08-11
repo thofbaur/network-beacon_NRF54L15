@@ -7,9 +7,10 @@
 #include <zephyr/sys/util.h>
 
 /* Bit layout of the advertised radio/storage status byte (ADV_POS_RADIO_STATUS
- * in common_include.h). Bits 0/1/5 (RADIO_STATUS_*, RADIO_STATUS_MOTION_UNAVAILABLE)
- * live in common_include.h since they're set directly, not derived from the
- * storage_faults/storage_full aggregates below. Bits 6-7 are reserved.
+ * in common_include.h). Bits 0/1/5/6 (RADIO_STATUS_*, RADIO_STATUS_MOTION_UNAVAILABLE,
+ * RADIO_STATUS_MOTION_PROBE_TIMEOUT) live in common_include.h since they're set
+ * directly, not derived from the storage_faults/storage_full aggregates below.
+ * Bit 7 is reserved.
  */
 #define STORAGE_STATUS_STORAGE_FULL	BIT(2)
 #define STORAGE_STATUS_PARAM_ERROR	BIT(3)

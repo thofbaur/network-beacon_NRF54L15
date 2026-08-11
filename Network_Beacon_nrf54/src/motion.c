@@ -3,8 +3,8 @@
 
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
+#include <zephyr/drivers/i2c.h>
 #include <zephyr/drivers/sensor.h>
-#include <zephyr/init.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/printk.h>
@@ -19,16 +19,30 @@
 #define MOTION_PARAMS_STORAGE_KEY "dsa/motion"
 #define MOTION_PARAMS_STORED_SIZE 3U
 
-/* device_is_ready() only reflects Zephyr's boot-time driver init result, not
- * a live probe - it can't recover on its own if the ADXL367 wasn't
- * powered/settled yet when that ran, which happens on a genuine power-cycle
- * (a debugger-triggered reset leaves the sensor rail already warm from the
- * prior session). sensor_trigger_set() does talk to the hardware live, so
- * retry the whole bring-up sequence - readiness check and trigger setup -
- * for a bounded window instead of giving up after one attempt.
+/* A fixed post-boot delay before probing (tried previously) can't be sized
+ * correctly without knowing the board's actual rail ramp-up time on a
+ * genuine power-cycle (LDO turn-on, bulk cap charge - on top of the
+ * ADXL367's own 9 ms Power-Up to Standby time, which only starts once VDD
+ * is already valid). Guessing a number that "should" be enough isn't
+ * reliable, and there's no RTT/scope in the field to measure the real
+ * figure and confirm it.
+ *
+ * So don't guess: the node is marked zephyr,deferred-init in the overlay
+ * (Zephyr won't auto-probe it at POST_KERNEL boot), and motion_init() polls
+ * the chip directly over I2C - a plain register read, safe to retry as many
+ * times as needed - until it actually acks with its correct DEVID. Only
+ * once that live read succeeds do we spend Zephyr's one-shot device_init()
+ * on the real driver probe.
+ *
+ * That device_init() really is one-shot: Zephyr latches
+ * dev->state->initialized (regardless of success) the moment
+ * do_device_init() runs, and this driver registers no deinit_fn, so
+ * device_deinit()/a second device_init() can't recover a failed attempt -
+ * only a full reboot can. Hence doing the raw-I2C liveness check first
+ * instead of retrying device_init() itself.
  */
-#define MOTION_SENSOR_READY_RETRY_MS 20
-#define MOTION_SENSOR_READY_TIMEOUT_MS 500
+#define MOTION_SENSOR_PROBE_RETRY_MS 5
+#define MOTION_SENSOR_PROBE_TIMEOUT_MS 3000
 
 #if DT_HAS_ALIAS(motion_detector)
 #define MOTION_SENSOR_NODE DT_ALIAS(motion_detector)
@@ -38,29 +52,12 @@
 #endif
 
 #if MOTION_SENSOR_PRESENT
-/* The ADXL367 Zephyr driver probes the chip exactly once, automatically,
- * from its own POST_KERNEL init at CONFIG_SENSOR_INIT_PRIORITY - well
- * before main()/motion_init() ever runs, and before the sensor's VDD rail
- * has necessarily settled on a genuine power-cycle (a debugger-triggered
- * reset never drops that rail, so it never hits this window). If that one
- * probe fails, device_is_ready() is latched false for the rest of the
- * session with no application-level way to retry it. Run a plain blocking
- * delay at a lower POST_KERNEL priority so it executes first, giving the
- * rail time to settle before the driver's probe runs at all.
- */
-#define MOTION_SENSOR_BOOT_DELAY_MS 50
-#define MOTION_SENSOR_BOOT_DELAY_PRIORITY 10
-
-BUILD_ASSERT(MOTION_SENSOR_BOOT_DELAY_PRIORITY < CONFIG_SENSOR_INIT_PRIORITY,
-	    "Motion sensor boot delay must run before the sensor driver's own init");
-
-static int motion_sensor_boot_delay(void)
-{
-	k_msleep(MOTION_SENSOR_BOOT_DELAY_MS);
-	return 0;
-}
-
-SYS_INIT(motion_sensor_boot_delay, POST_KERNEL, MOTION_SENSOR_BOOT_DELAY_PRIORITY);
+BUILD_ASSERT(DT_ON_BUS(MOTION_SENSOR_NODE, i2c),
+	    "Motion sensor liveness probe assumes an I2C bus");
+#define MOTION_SENSOR_BUS_NODE DT_BUS(MOTION_SENSOR_NODE)
+#define MOTION_SENSOR_I2C_ADDR DT_REG_ADDR(MOTION_SENSOR_NODE)
+#define MOTION_SENSOR_DEVID_REG 0x00u
+#define MOTION_SENSOR_DEVID_VAL 0xADu /* ADXL367 datasheet: fixed Analog Devices ID */
 #endif
 
 struct motion_state_params {
@@ -74,6 +71,7 @@ static bool command_batch_active;
 
 #if MOTION_SENSOR_PRESENT
 static const struct device *const motion_sensor = DEVICE_DT_GET(MOTION_SENSOR_NODE);
+static const struct device *const motion_sensor_bus = DEVICE_DT_GET(MOTION_SENSOR_BUS_NODE);
 #endif
 static bool motion_available;
 static bool eco_active;
@@ -169,36 +167,74 @@ int motion_init(void)
 	}
 
 #if MOTION_SENSOR_PRESENT
-	int64_t motion_sensor_retry_deadline = k_uptime_get() + MOTION_SENSOR_READY_TIMEOUT_MS;
-	int motion_sensor_err;
+	int motion_sensor_err = -ENODEV;
+	bool motion_sensor_seen_alive = false;
 
-	for (;;) {
-		if (!device_is_ready(motion_sensor)) {
-			motion_sensor_err = -ENODEV;
-		} else {
-			struct sensor_trigger trig = {
-				.type = SENSOR_TRIG_THRESHOLD,
-				.chan = SENSOR_CHAN_ACCEL_XYZ,
-			};
+	if (!device_is_ready(motion_sensor_bus)) {
+		printk("Motion sensor bus not ready\n");
+	} else {
+		int64_t motion_sensor_deadline =
+			k_uptime_get() + MOTION_SENSOR_PROBE_TIMEOUT_MS;
 
-			motion_sensor_err = sensor_trigger_set(motion_sensor, &trig,
-							       motion_trigger_handler);
+		/* Cheap insurance against a bus a prior session may have left
+		 * mid-transaction (SDA held low) when power dropped.
+		 */
+		(void)i2c_recover_bus(motion_sensor_bus);
+
+		for (;;) {
+			uint8_t devid = 0;
+
+			motion_sensor_err = i2c_reg_read_byte(motion_sensor_bus,
+							      MOTION_SENSOR_I2C_ADDR,
+							      MOTION_SENSOR_DEVID_REG,
+							      &devid);
+			if (!motion_sensor_err && devid != MOTION_SENSOR_DEVID_VAL) {
+				motion_sensor_err = -ENODEV;
+			}
+
+			if (!motion_sensor_err) {
+				motion_sensor_seen_alive = true;
+				break;
+			}
+
+			if (k_uptime_get() >= motion_sensor_deadline) {
+				printk("Motion sensor liveness probe failed (err %d) after %d ms\n",
+				       motion_sensor_err, MOTION_SENSOR_PROBE_TIMEOUT_MS);
+				break;
+			}
+
+			k_sleep(K_MSEC(MOTION_SENSOR_PROBE_RETRY_MS));
 		}
-
-		if (!motion_sensor_err) {
-			motion_available = true;
-			printk("Motion sensor initialized\n");
-			break;
-		}
-
-		if (k_uptime_get() >= motion_sensor_retry_deadline) {
-			printk("Motion sensor bring-up failed (err %d) after %d ms\n",
-			       motion_sensor_err, MOTION_SENSOR_READY_TIMEOUT_MS);
-			break;
-		}
-
-		k_sleep(K_MSEC(MOTION_SENSOR_READY_RETRY_MS));
 	}
+
+	if (!motion_sensor_err) {
+		motion_sensor_err = device_init(motion_sensor);
+	}
+
+	if (!motion_sensor_err) {
+		struct sensor_trigger trig = {
+			.type = SENSOR_TRIG_THRESHOLD,
+			.chan = SENSOR_CHAN_ACCEL_XYZ,
+		};
+
+		motion_sensor_err = sensor_trigger_set(motion_sensor, &trig,
+						       motion_trigger_handler);
+	}
+
+	if (!motion_sensor_err) {
+		motion_available = true;
+		printk("Motion sensor initialized\n");
+	} else {
+		printk("Motion sensor bring-up failed (err %d)\n", motion_sensor_err);
+	}
+
+	/* Only meaningful together with RADIO_STATUS_MOTION_UNAVAILABLE: set
+	 * means the liveness probe above never once got a correct DEVID back
+	 * (still a power/timing/wiring question); clear means the chip
+	 * answered fine but bring-up failed some other way afterwards (a
+	 * device_init()/trigger_set() problem instead - a different bug).
+	 */
+	device_set_radio_status_bit(RADIO_STATUS_MOTION_PROBE_TIMEOUT, !motion_sensor_seen_alive);
 #else
 	printk("Board provides no motion sensor; inactivity detection disabled\n");
 #endif

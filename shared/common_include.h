@@ -31,11 +31,18 @@
  * Bit 1: NUS unavailable - the tag can never be read out over BLE.
  * Bit 5: motion sensor unavailable - inactivity detection can't run, so the
  *   tag is stuck in high-activity mode (see motion.c).
- * Bits 2-4 are STORAGE_STATUS_* (device.h); bits 6-7 are reserved.
+ * Bit 6: only meaningful alongside bit 5. Set if motion_init() never once
+ *   saw the ADXL367 answer correctly on the I2C bus within its retry
+ *   window (still points at power/timing/wiring on the sensor itself).
+ *   Clear if the chip *was* seen alive but bring-up still failed
+ *   afterwards (points at the driver probe or trigger setup instead - a
+ *   different bug, not a power/timing one). See motion.c.
+ * Bits 2-4 are STORAGE_STATUS_* (device.h); bit 7 is reserved.
  */
 #define RADIO_STATUS_SCAN_ERROR		BIT(0)
 #define RADIO_STATUS_NUS_ERROR		BIT(1)
 #define RADIO_STATUS_MOTION_UNAVAILABLE	BIT(5)
+#define RADIO_STATUS_MOTION_PROBE_TIMEOUT	BIT(6)
 
 #define BLE_UPDATE_ADV_ERROR		BIT(0)
 #define BLE_UPDATE_SCAN_ERROR		BIT(1)

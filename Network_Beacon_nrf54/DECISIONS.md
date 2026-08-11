@@ -259,10 +259,58 @@ no longer exist. New layout in `device.h`/`shared/common_include.h`:
   trigger setup, inactivity detection silently never runs and the tag is
   permanently stuck in high-activity mode — a battery-life risk with no
   prior visibility.
-- Bits 6-7: reserved.
+- Bit 6 `RADIO_STATUS_MOTION_PROBE_TIMEOUT` (new, 2026-08-11): see the entry
+  below - only meaningful alongside bit 5.
+- Bit 7: reserved.
 
 `self_report.c`/`eco_log.c` share a generic `ram_log_ring.c` module (this
 session's RAM-ring counterpart to `flash_ring_store.c`'s earlier dedup of
 the flash layer), so the new storage-full bit was wired once, via a
 `storage_full_bit` field on `ram_log_ring_config`, and both domains got it
 for free.
+
+## 2026-08-11: Motion Bring-Up Failure Splits Into Two Advertised Bits
+
+Tags in the field have no RTT or power-measurement access, so when the
+ADXL367 fails to come up after a genuine power-cycle (but works fine after
+a debugger flash - a debug reset never drops its VDD rail, so it never hits
+whatever race a real power-cycle does), the only diagnostic channel
+available is what's already visible over BLE: the advertised status byte,
+relayed by `Network_Base_nrf54` and printed by `dsa_logger.py`.
+
+`RADIO_STATUS_MOTION_UNAVAILABLE` alone only says bring-up failed, not
+where. `motion_init()` now does a raw I2C liveness read (retryable, unlike
+Zephyr's one-shot `device_init()` - see the comment in `motion.c`) before
+attempting the real driver probe, so it can tell apart "the chip never
+once answered on the bus" from "the chip answered fine but something later
+in bring-up failed anyway." Those are different bugs with different fixes,
+so they get different bits: `RADIO_STATUS_MOTION_PROBE_TIMEOUT` (bit 6),
+meaningful only alongside bit 5. Set means still unexplained - possibly a
+power/timing/wiring problem outside what a longer retry window can fix.
+Clear means the chip was confirmed alive, ruling that out entirely and
+pointing at `adxl367_probe()`/`sensor_trigger_set()` instead.
+
+## 2026-08-11: `param_storage_load()` Now Treats A 0-Byte Read As Not-Found
+
+`STORAGE_STATUS_PARAM_ERROR` (bit 3) was set on every tag observed in the
+field, for every one of the four persisted-parameter domains (LED/network/
+radio/motion) - not a data-corruption symptom, since it reproduced on
+freshly-flashed tags that had never had a parameter saved at all.
+
+`param_storage_load()`/`param_storage_load_legacy()` treated `loaded < 0`
+as the only "key not found" signal from `settings_load_one()`, matching
+the ZMS backend's `csi_load_one`, which does return a negative errno on a
+miss. This project builds with `CONFIG_SETTINGS_NVS` instead, which has no
+`csi_load_one` - `settings_load_one()` falls back to the generic
+`csi_load()` path in Zephyr's `settings_store.c`, which walks every stored
+entry looking for a name match and, finding none, returns 0 (success),
+not a negative value. So a genuinely-never-saved key fell through into the
+header/CRC validation against a 0-byte read, which fails and returns
+`-EBADMSG` - which every caller in led.c/network.c/radio.c/motion.c treats
+as a real fault, since only `-ENOENT` was ever handled as "no stored
+params, use defaults."
+
+Fixed once in `param_storage.c` (both load functions) rather than in each
+of the four callers: a 0-byte `settings_load_one()` result is now mapped
+to `-ENOENT` explicitly, since a real saved record is never 0 bytes
+(`param_storage_save()` rejects `len == 0`).

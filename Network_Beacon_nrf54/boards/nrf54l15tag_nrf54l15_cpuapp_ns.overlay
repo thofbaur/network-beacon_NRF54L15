@@ -16,4 +16,15 @@
 &adxl367 {
 	int1-gpios = <&gpio0 3 0>;
 	odr = <1>; /* 25 Hz */
+
+	/*
+	 * Zephyr auto-probes this device at POST_KERNEL boot, before the
+	 * VDD rail has necessarily settled on a genuine power-cycle (a
+	 * debugger-triggered reset never drops that rail, so it never hits
+	 * this race). A failed auto-probe is latched permanently - nothing
+	 * re-runs it later. Deferring init lets motion_init() poll the chip
+	 * live over I2C until it actually responds, then run the one probe
+	 * itself - see the MOTION_SENSOR_PROBE_* comment in motion.c.
+	 */
+	zephyr,deferred-init;
 };
