@@ -44,6 +44,33 @@
 #define MOTION_SENSOR_PROBE_RETRY_MS 5
 #define MOTION_SENSOR_PROBE_TIMEOUT_MS 3000
 
+/* Once the liveness probe above has confirmed the chip is actually on the
+ * bus, device_init() can still fail for a reason that has nothing to do
+ * with power/timing: adxl367_probe() (adxl367.c, out-of-tree Zephyr driver)
+ * unconditionally runs a self-test as part of every single probe - forces
+ * a known electrostatic deflection and checks the measured delta falls in
+ * a fixed window (ADXL367_SELF_TEST_MIN/MAX, not Kconfig-tunable, no way to
+ * skip it). That measurement spans ~450 ms (two ~160-190 ms settle waits at
+ * our 25 Hz ODR) during which any real vibration - e.g. someone handling
+ * the tag right as it powers up, exactly what a manual power-cycle test
+ * looks like - can push the reading outside the expected window and fail
+ * the probe, even though the chip itself is fully alive and healthy.
+ *
+ * Retrying just needs the vibration to have stopped by the next attempt,
+ * which a plain device_init() can't do (see the comment above: it's a
+ * true one-shot once do_device_init() has run). There's no deinit_fn to
+ * unlock it through the supported API, so this reaches past that API and
+ * clears dev->state->initialized directly to force a real re-probe -
+ * unsupported use of Zephyr's device-model internals, justified only
+ * because there is no other way to get adxl367_probe() to run again
+ * within the same boot. Safe specifically for this driver because
+ * adxl367_init()/adxl367_probe() always soft-resets the chip first, so
+ * each attempt starts from a clean hardware state rather than resuming
+ * from whatever the previous failed attempt left behind.
+ */
+#define MOTION_SENSOR_PROBE_ATTEMPTS 5
+#define MOTION_SENSOR_PROBE_SETTLE_MS 100
+
 #if DT_HAS_ALIAS(motion_detector)
 #define MOTION_SENSOR_NODE DT_ALIAS(motion_detector)
 #define MOTION_SENSOR_PRESENT 1
@@ -208,7 +235,20 @@ int motion_init(void)
 	}
 
 	if (!motion_sensor_err) {
-		motion_sensor_err = device_init(motion_sensor);
+		for (int attempt = 0; attempt < MOTION_SENSOR_PROBE_ATTEMPTS; attempt++) {
+			motion_sensor_err = device_init(motion_sensor);
+			if (!motion_sensor_err) {
+				break;
+			}
+
+			printk("Motion sensor probe attempt %d/%d failed (err %d)\n",
+			       attempt + 1, MOTION_SENSOR_PROBE_ATTEMPTS, motion_sensor_err);
+
+			if (attempt + 1 < MOTION_SENSOR_PROBE_ATTEMPTS) {
+				motion_sensor->state->initialized = false;
+				k_sleep(K_MSEC(MOTION_SENSOR_PROBE_SETTLE_MS));
+			}
+		}
 	}
 
 	if (!motion_sensor_err) {
