@@ -342,3 +342,17 @@ unsupported use of Zephyr device-model internals, done only because
 nothing else can get the driver to actually retry. Safe here specifically
 because `adxl367_probe()` always soft-resets the chip first, so each
 attempt starts clean rather than resuming stale state from the last one.
+
+## 2026-08-12: `CONFIG_DSA_MOTION_DEFAULT_ACTIVE` Moved To `dsa_runtime.conf`
+
+Asked for a runtime-controllable eco-mode enable/disable switch in
+`dsa_runtime.conf`. `motion_enter_eco()` (motion.c) already has exactly one
+caller, gated by `params_motion.active` - so there is no path into eco mode
+that this flag doesn't already cover, even though it reads as "inactivity
+detection active" rather than "eco mode enabled." It was already runtime-
+controllable (`P_MOTION_ACTIVE`) and already persisted
+(`motion_params_save()`/`motion_params_load()`) - its Kconfig default
+(`CONFIG_DSA_MOTION_DEFAULT_ACTIVE`) was just sitting in `dsa.conf` instead
+of `dsa_runtime.conf`, which is specifically for defaults of parameters
+changeable at runtime and persisted. Moved rather than adding a second,
+redundant switch.
