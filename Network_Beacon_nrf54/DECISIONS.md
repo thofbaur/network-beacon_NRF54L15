@@ -314,3 +314,31 @@ Fixed once in `param_storage.c` (both load functions) rather than in each
 of the four callers: a 0-byte `settings_load_one()` result is now mapped
 to `-ENOENT` explicitly, since a real saved record is never 0 bytes
 (`param_storage_save()` rejects `len == 0`).
+
+## 2026-08-11: Motion Bring-Up Retries `device_init()` Itself, By Forcing It
+
+`RADIO_STATUS_MOTION_PROBE_TIMEOUT` (bit 6) confirmed the liveness-probe fix
+works: most field failures now show bit 5 set with bit 6 *clear*, meaning
+the ADXL367 answers the raw I2C liveness probe fine but `device_init()`
+still fails right after. That's a different bug from the power/timing one
+bit 6 was built to rule out.
+
+Root cause: `adxl367_probe()` (out-of-tree Zephyr driver, adi/adxl367)
+unconditionally self-tests on every probe - forces a known electrostatic
+deflection and checks the delta against a fixed window, no Kconfig to skip
+or tune it. That measurement window is vibration-sensitive by design,
+and a manual power-cycle test is exactly the scenario most likely to have
+someone handling the tag while it happens - a false self-test failure with
+a perfectly healthy chip.
+
+The fix retries `device_init()` itself (`MOTION_SENSOR_PROBE_ATTEMPTS`,
+`motion.c`) rather than trusting one shot once liveness is confirmed. This
+requires reaching past the supported device API: Zephyr latches
+`dev->state->initialized` the moment `do_device_init()` runs regardless of
+outcome, and the ADXL367 driver registers no `deinit_fn`, so there is no
+supported way to make `device_init()` run `adxl367_probe()` a second time.
+`motion.c` clears `dev->state->initialized` directly between attempts -
+unsupported use of Zephyr device-model internals, done only because
+nothing else can get the driver to actually retry. Safe here specifically
+because `adxl367_probe()` always soft-resets the chip first, so each
+attempt starts clean rather than resuming stale state from the last one.
