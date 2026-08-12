@@ -74,6 +74,39 @@ static void data_sent(struct bt_nus_client *nus, uint8_t err,
 	k_sem_give(&nus_write_sem);
 }
 
+/* Acks a received (domain, count) batch back to the beacon so it knows the
+ * data actually made it here before dropping it from its own storage - see
+ * the DSA_NUS_ACK_MAGIC comment in common_include.h. Reuses the same write
+ * mechanism/semaphore as send_start_command(); safe because data_received()
+ * calls are already sequential (one notification at a time), so there's
+ * never a write-in-flight when this runs.
+ */
+static int send_ack(uint8_t domain, uint8_t count)
+{
+	int err;
+	uint8_t ack[] = { DSA_NUS_ACK_MAGIC, domain, count };
+
+	err = bt_nus_client_send(&nus_client, ack, sizeof(ack));
+	if (err) {
+		LOG_WRN("Failed to send ack (domain 0x%02x, err %d)", domain, err);
+		return err;
+	}
+
+	err = k_sem_take(&nus_write_sem, NUS_WRITE_TIMEOUT);
+	if (err) {
+		LOG_WRN("NUS ack send timeout (domain 0x%02x)", domain);
+		return err;
+	}
+
+	return 0;
+}
+
+static bool nus_flag_is_ackable(uint8_t flag)
+{
+	return flag == DSA_NUS_FLAG_DATA || flag == DSA_NUS_FLAG_SELF_REPORT ||
+	       flag == DSA_NUS_FLAG_ECO_LOG;
+}
+
 static uint8_t data_received(struct bt_nus_client *nus,
 			     const uint8_t *data, uint16_t len)
 {
@@ -93,6 +126,13 @@ static uint8_t data_received(struct bt_nus_client *nus,
 	raw_data[NUS_RAW_PREFIX_LEN + raw_len] = '\r';
 	raw_data[NUS_RAW_PREFIX_LEN + raw_len + 1] = '\n';
 	output_data(raw_data, raw_total_len);
+
+	/* Ack after the payload is safely queued for output, not before -
+	 * that's the durability boundary this protocol relies on.
+	 */
+	if (len >= 2 && nus_flag_is_ackable(data[0])) {
+		(void)send_ack(data[0], data[1]);
+	}
 #else
 	message_parser_feed(current_beacon_id, data, len);
 #endif

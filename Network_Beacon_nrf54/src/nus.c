@@ -34,6 +34,14 @@
 #define NUS_SELF_REPORT_PACKET_HEADER_SIZE 2U
 #define NUS_STORAGE_BUSY_RETRY_MS 50
 #define NUS_STORAGE_BUSY_TIMEOUT_MS 2000
+/* How long to wait for Network_Base_nrf54 to ack a sent batch (see
+ * DSA_NUS_ACK_MAGIC in common_include.h) before giving up on the rest of
+ * that domain's export for this connection. Generous over the expected
+ * round trip (one ATT write + response on top of the notify that already
+ * completed), but well under NUS_SEND_CONFIRM_TIMEOUT_MS since an ack
+ * round trip is simpler than the original bulk send.
+ */
+#define NUS_ACK_TIMEOUT_MS 2000
 
 static struct bt_conn *current_conn;
 static bool nus_notifications_enabled;
@@ -42,6 +50,9 @@ static atomic_t pending_nus_sends;
 static atomic_t disconnect_when_sent;
 static struct bt_gatt_exchange_params mtu_exchange_params;
 static struct bt_conn *transfer_conn;
+static uint8_t nus_ack_wait_domain;
+static uint8_t nus_ack_wait_count;
+static bool nus_ack_wait_active;
 
 static void transfer_work_handler(struct k_work *work);
 static void nus_idle_timeout_handler(struct k_work *work);
@@ -50,6 +61,7 @@ static void disconnect_nus_connection(struct bt_conn *conn);
 static K_WORK_DEFINE(transfer_work, transfer_work_handler);
 static K_WORK_DELAYABLE_DEFINE(nus_idle_timeout_work, nus_idle_timeout_handler);
 static K_SEM_DEFINE(nus_sent_sem, 0, 1);
+static K_SEM_DEFINE(nus_ack_sem, 0, 1);
 static K_MUTEX_DEFINE(nus_state_lock);
 K_THREAD_STACK_DEFINE(transfer_stack, NUS_TRANSFER_STACK_SIZE);
 static struct k_work_q transfer_work_q;
@@ -62,6 +74,68 @@ static bool nus_connection_ready(struct bt_conn *conn)
 	ready = current_conn == conn && nus_notifications_enabled;
 	k_mutex_unlock(&nus_state_lock);
 	return ready;
+}
+
+/* Registers (domain, count) as the batch we're about to wait an ack for.
+ * Resets nus_ack_sem unconditionally first, so this is safe to call again
+ * even if a previous arm's matching nus_ack_wait() was never reached (e.g.
+ * the send itself failed) - any stray pending give from that cycle is
+ * cleared before the new expectation is armed. Must be called before the
+ * notification is actually sent, not after: arming only after sending
+ * would leave a window where a (very fast) real ack could arrive and be
+ * dropped because nothing was listening for it yet.
+ */
+static void nus_ack_arm(uint8_t domain, uint8_t count)
+{
+	k_sem_reset(&nus_ack_sem);
+
+	k_mutex_lock(&nus_state_lock, K_FOREVER);
+	nus_ack_wait_domain = domain;
+	nus_ack_wait_count = count;
+	nus_ack_wait_active = true;
+	k_mutex_unlock(&nus_state_lock);
+}
+
+/* Waits for the ack armed by nus_ack_arm(). Returns false on timeout - that
+ * means Network_Base_nrf54 never confirmed this batch, so it must not be
+ * committed/dropped from storage (see the callers in send_networkdata()/
+ * send_self_reports()/send_eco_log()).
+ */
+static bool nus_ack_wait(void)
+{
+	bool acked = k_sem_take(&nus_ack_sem, K_MSEC(NUS_ACK_TIMEOUT_MS)) == 0;
+
+	k_mutex_lock(&nus_state_lock, K_FOREVER);
+	nus_ack_wait_active = false;
+	k_mutex_unlock(&nus_state_lock);
+
+	return acked;
+}
+
+/* Called from nus_received() when a base -> beacon write arrives. Only
+ * wakes a waiting nus_ack_wait() if this ack matches exactly what's
+ * currently armed - a stale, duplicate, or mismatched ack is ignored
+ * rather than waking the wrong wait.
+ */
+static void nus_handle_ack(const uint8_t *data, uint16_t len)
+{
+	bool matched = false;
+
+	if (len != 3 || data[0] != DSA_NUS_ACK_MAGIC) {
+		return;
+	}
+
+	k_mutex_lock(&nus_state_lock, K_FOREVER);
+	if (nus_ack_wait_active && data[1] == nus_ack_wait_domain &&
+	    data[2] == nus_ack_wait_count) {
+		nus_ack_wait_active = false;
+		matched = true;
+	}
+	k_mutex_unlock(&nus_state_lock);
+
+	if (matched) {
+		k_sem_give(&nus_ack_sem);
+	}
 }
 
 static void transfer_finish(void)
@@ -374,6 +448,7 @@ static int send_networkdata(struct bt_conn *conn)
 			contacts_written =
 				bytes_written / NETWORK_CONTACT_ENTRY_SIZE;
 			buffer[1] = contacts_written;
+			nus_ack_arm(DSA_NUS_FLAG_DATA, contacts_written);
 			err = nus_send_confirmed(
 				conn, buffer,
 				bytes_written + NUS_DATA_PACKET_HEADER_SIZE);
@@ -386,6 +461,25 @@ static int send_networkdata(struct bt_conn *conn)
 					       sync_err);
 				}
 				return err;
+			}
+
+			/* Only the base's ack proves this batch actually
+			 * arrived - nus_send_confirmed() succeeding only means
+			 * the local link transmitted it. Without the ack,
+			 * leave it uncommitted (still in storage) rather than
+			 * risk dropping data the base never got; just stop
+			 * exporting contacts for this connection and let the
+			 * transfer continue on to self-reports/eco-log.
+			 */
+			if (!nus_ack_wait()) {
+				printk("Network data batch not acked by base; stopping contact export\n");
+				network_contact_export_abort();
+				sync_err = network_sync_contact_storage();
+				if (sync_err) {
+					printk("Failed to checkpoint contact storage (err %d)\n",
+					       sync_err);
+				}
+				return 0;
 			}
 
 			err = network_contact_export_commit();
@@ -460,6 +554,7 @@ static int send_self_reports(struct bt_conn *conn)
 
 		buffer[1] = (uint8_t)(bytes_written / SELF_REPORT_ENTRY_SIZE);
 
+		nus_ack_arm(DSA_NUS_FLAG_SELF_REPORT, buffer[1]);
 		err = nus_send_confirmed(
 			conn, buffer, bytes_written + NUS_SELF_REPORT_PACKET_HEADER_SIZE);
 		if (err) {
@@ -471,6 +566,18 @@ static int send_self_reports(struct bt_conn *conn)
 				       sync_err);
 			}
 			return err;
+		}
+
+		if (!nus_ack_wait()) {
+			printk("Self report batch not acked by base; stopping self-report export\n");
+			self_report_export_abort();
+			sync_err = self_report_sync_storage();
+			if (sync_err) {
+				printk("Failed to checkpoint self-report storage (err %d)\n",
+				       sync_err);
+			}
+			printk("Sent %u self report(s)\n", reports_sent);
+			return 0;
 		}
 
 		err = self_report_export_commit();
@@ -547,6 +654,7 @@ static int send_eco_log(struct bt_conn *conn)
 
 		buffer[1] = (uint8_t)(bytes_written / ECO_LOG_ENTRY_SIZE);
 
+		nus_ack_arm(DSA_NUS_FLAG_ECO_LOG, buffer[1]);
 		err = nus_send_confirmed(
 			conn, buffer, bytes_written + NUS_ECO_LOG_PACKET_HEADER_SIZE);
 		if (err) {
@@ -558,6 +666,18 @@ static int send_eco_log(struct bt_conn *conn)
 				       sync_err);
 			}
 			return err;
+		}
+
+		if (!nus_ack_wait()) {
+			printk("Eco log batch not acked by base; stopping eco log export\n");
+			eco_log_export_abort();
+			sync_err = eco_log_sync_storage();
+			if (sync_err) {
+				printk("Failed to checkpoint eco log storage (err %d)\n",
+				       sync_err);
+			}
+			printk("Sent %u eco log entrie(s)\n", entries_sent);
+			return 0;
 		}
 
 		err = eco_log_export_commit();
@@ -615,7 +735,10 @@ static void nus_received(struct bt_conn *conn, const uint8_t *const data, uint16
 		}
 
 		k_work_submit_to_queue(&transfer_work_q, &transfer_work);
+		return;
 	}
+
+	nus_handle_ack(data, len);
 }
 
 static void transfer_work_handler(struct k_work *work)

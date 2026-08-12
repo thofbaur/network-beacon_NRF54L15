@@ -24,13 +24,13 @@ static void button_handler(uint32_t button_state, uint32_t has_changed)
 	}
 
 	if ((has_changed & DK_BTN3_MSK) && (button_state & DK_BTN3_MSK)) {
-		LOG_INF("Button2 pressed: start scanning at data level 1");
-		(void)radio_start_scanning_with_level(DATA_LEVEL_1);
+		LOG_INF("Button2 pressed: start scanning at data level 2");
+		(void)radio_start_scanning_with_level(DATA_LEVEL_2);
 	}
 
 	if ((has_changed & DK_BTN4_MSK) && (button_state & DK_BTN4_MSK)) {
-		LOG_INF("Button3 pressed: start scanning at data level 2");
-		(void)radio_start_scanning_with_level(DATA_LEVEL_2);
+		LOG_INF("Button3 pressed: start scanning at data level 1");
+		(void)radio_start_scanning_with_level(DATA_LEVEL_1);
 	}
 }
 
@@ -87,7 +87,7 @@ int main(void)
 		return 0;
 	}
 
-	printk("Network base ready. Press button0 to connect at data level 3. Press button1 to stop connecting. Press button2 to connect at data level 1. Press button3 to connect at data level 2\n");
+	printk("Network base ready. Press button0 to connect at data level 3. Press button1 to stop connecting. Press button2 to connect at data level 2. Press button3 to connect at data level 1\n");
 
 	for (;;) {
 		k_sleep(K_FOREVER);

@@ -356,3 +356,48 @@ controllable (`P_MOTION_ACTIVE`) and already persisted
 of `dsa_runtime.conf`, which is specifically for defaults of parameters
 changeable at runtime and persisted. Moved rather than adding a second,
 redundant switch.
+
+## 2026-08-12: Exported Batches Now Require A Base Ack Before Commit
+
+Field logs kept showing contacts/self-reports/eco-log missing after a
+transfer, even after two throughput fixes (`Network_Base_nrf54`: async
+DMA UART TX, more ACL RX buffer headroom) cut the loss rate from
+~25-31% down to ~5% on a large backlog. The remaining loss wasn't a
+throughput problem: `send_networkdata()`/`send_self_reports()`/
+`send_eco_log()` (`nus.c`) each committed (dropped) a batch from storage
+the moment `nus_send_confirmed()` succeeded - which only proves the local
+BLE stack transmitted it and got a link-layer ack, not that
+`Network_Base_nrf54` ever received it. A beacon could - and did -
+correctly believe it had sent everything while the base had silently
+missed a chunk of it.
+
+Closed by requiring an explicit ack from the base before committing.
+`DSA_NUS_ACK_MAGIC` (`shared/common_include.h`) defines a 3-byte
+base->beacon message - `{magic, domain, entries_acked}` - sent over the
+same write channel already used for the "st" start command
+(`bt_nus_client_send()` -> `bt_gatt_write()`, ATT Write Request, so
+already protocol-acknowledged, unlike notifications). `domain` reuses the
+existing `DSA_NUS_FLAG_DATA`/`SELF_REPORT`/`ECO_LOG` values directly
+rather than a new enum, since that's already the flag byte the base just
+received.
+
+Each export loop now does arm-ack -> send -> wait-ack -> commit
+(`nus_ack_arm()`/`nus_ack_wait()` in `Network_Beacon_nrf54/src/nus.c`),
+armed *before* sending specifically to avoid a window where a fast real
+ack could arrive before anything was listening for it. On an ack timeout,
+the affected export function stops exporting that domain and returns 0
+rather than propagating an error - the unacked batch simply stays in
+storage for the next connection. This piggybacks on
+`transfer_work_handler()`'s existing control flow without needing to
+touch it: it already treats a 0 return as "domain done, move on," which
+is exactly the desired behavior (previously only `send_eco_log()`'s
+*caller* tolerated a failure without aborting the whole transfer; this
+generalizes that tolerance to all three domains, at the source instead of
+the call site).
+
+Deliberately not chased further: acknowledging all the way back from the
+PC-side logger. The base successfully queuing a payload for UART output
+is the durability boundary here - going further would add a slow
+USB-serial round trip per batch to guard against a failure mode (base
+crashes with data still queued) with no evidence behind it, versus the
+demonstrated one (BLE-level loss under burst load) this closes.

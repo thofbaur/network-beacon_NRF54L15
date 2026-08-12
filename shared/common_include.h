@@ -17,6 +17,27 @@
  */
 #define DSA_NUS_FLAG_CONNECT_STATUS		0x08
 
+/* Base -> beacon acknowledgment, sent over the same NUS RX write channel as
+ * the "st" start command (bt_nus_client_send() -> bt_gatt_write(), ATT
+ * Write Request - acknowledged at the protocol level, unlike notifications).
+ * 3 bytes: { DSA_NUS_ACK_MAGIC, domain, entries_acked }.
+ *
+ * "domain" reuses DSA_NUS_FLAG_DATA/SELF_REPORT/ECO_LOG directly - it's
+ * already the flag byte the base just received and is acking, no separate
+ * mapping needed. "entries_acked" mirrors the count byte the beacon already
+ * put in that same payload (see e.g. send_networkdata()'s buffer[1] in
+ * Network_Beacon_nrf54/src/nus.c).
+ *
+ * The beacon only commits/drops an exported batch once it sees this ack for
+ * that exact (domain, count) - its own local NUS send confirmation only
+ * means the link transmitted it, not that Network_Base_nrf54 ever received
+ * it. See DECISIONS.md.
+ *
+ * 0xAC can't collide with the 2-byte ASCII "st" command (nus_received()
+ * distinguishes by first byte/length) or with any DSA_NUS_FLAG_* value.
+ */
+#define DSA_NUS_ACK_MAGIC			0xAC
+
 /* Manufacturer-data byte positions. */
 #define ADV_POS_ID 0
 #define ADV_POS_RADIO_STATUS 1
