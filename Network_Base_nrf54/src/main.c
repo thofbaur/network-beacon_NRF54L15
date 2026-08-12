@@ -3,6 +3,7 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/printk.h>
 
+#include "common_include.h"
 #include "led.h"
 #include "nus.h"
 #include "output.h"
@@ -13,13 +14,23 @@ LOG_MODULE_REGISTER(network_base, LOG_LEVEL_INF);
 static void button_handler(uint32_t button_state, uint32_t has_changed)
 {
 	if ((has_changed & DK_BTN1_MSK) && (button_state & DK_BTN1_MSK)) {
-		LOG_INF("Button0 pressed: start scanning");
-		(void)radio_start_scanning();
+		LOG_INF("Button0 pressed: start scanning at data level 3");
+		(void)radio_start_scanning_with_level(DATA_LEVEL_3);
 	}
 
 	if ((has_changed & DK_BTN2_MSK) && (button_state & DK_BTN2_MSK)) {
 		LOG_INF("Button1 pressed: wait for finished, then stop");
 		radio_request_stop_after_finished();
+	}
+
+	if ((has_changed & DK_BTN3_MSK) && (button_state & DK_BTN3_MSK)) {
+		LOG_INF("Button2 pressed: start scanning at data level 1");
+		(void)radio_start_scanning_with_level(DATA_LEVEL_1);
+	}
+
+	if ((has_changed & DK_BTN4_MSK) && (button_state & DK_BTN4_MSK)) {
+		LOG_INF("Button3 pressed: start scanning at data level 2");
+		(void)radio_start_scanning_with_level(DATA_LEVEL_2);
 	}
 }
 
@@ -76,7 +87,7 @@ int main(void)
 		return 0;
 	}
 
-	printk("Network base ready. Press button0 to Start connecting. Press button1 to stop connecting\n");
+	printk("Network base ready. Press button0 to connect at data level 3. Press button1 to stop connecting. Press button2 to connect at data level 1. Press button3 to connect at data level 2\n");
 
 	for (;;) {
 		k_sleep(K_FOREVER);

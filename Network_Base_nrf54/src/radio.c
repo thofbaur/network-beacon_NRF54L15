@@ -18,7 +18,6 @@
 
 LOG_MODULE_DECLARE(network_base);
 
-#define DSA_ADV_NAME "DSA"
 #define DSA_MANUFACTURER_PAYLOAD_LEN 3
 #define DSA_ATT_PAYLOAD_OVERHEAD 3U
 #define DSA_CONN_INTERVAL_MIN 6U
@@ -26,6 +25,11 @@ LOG_MODULE_DECLARE(network_base);
 #define DSA_CONN_LATENCY 0U
 #define DSA_CONN_TIMEOUT 400U
 #define DSA_FINISH_DISCONNECT_DELAY K_MSEC(50)
+
+static const char * const dsa_allowed_adv_names[] = {
+	"DSA",
+	"DSL",
+};
 
 struct dsa_adv {
 	bool name_match;
@@ -46,10 +50,13 @@ static uint8_t pending_beacon_id;
 static uint8_t pending_beacon_status;
 static uint8_t connected_beacon_id;
 static uint8_t connected_beacon_status;
+static uint8_t readout_level_threshold = CONFIG_DSA_READOUT_LEVEL;
 static const struct bt_le_conn_param dsa_conn_param =
 	BT_LE_CONN_PARAM_INIT(DSA_CONN_INTERVAL_MIN, DSA_CONN_INTERVAL_MAX,
 			      DSA_CONN_LATENCY, DSA_CONN_TIMEOUT);
 static struct k_work_delayable finish_disconnect_work;
+
+static int start_scanning(void);
 
 static const char *phy_to_str(uint8_t phy)
 {
@@ -172,6 +179,19 @@ static void finish_disconnect_handler(struct k_work *work)
 	}
 }
 
+static bool adv_name_allowed(const uint8_t *data, uint8_t len)
+{
+	for (size_t i = 0; i < ARRAY_SIZE(dsa_allowed_adv_names); i++) {
+		const char *name = dsa_allowed_adv_names[i];
+
+		if ((len == strlen(name)) && (memcmp(data, name, len) == 0)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
 static bool parse_advertising_data(struct bt_data *data, void *user_data)
 {
 	struct dsa_adv *adv = user_data;
@@ -179,8 +199,7 @@ static bool parse_advertising_data(struct bt_data *data, void *user_data)
 	switch (data->type) {
 	case BT_DATA_NAME_COMPLETE:
 	case BT_DATA_NAME_SHORTENED:
-		if ((data->data_len == strlen(DSA_ADV_NAME)) &&
-		    (memcmp(data->data, DSA_ADV_NAME, data->data_len) == 0)) {
+		if (adv_name_allowed(data->data, data->data_len)) {
 			adv->name_match = true;
 		}
 		break;
@@ -207,7 +226,7 @@ static bool should_connect_to_adv(const struct dsa_adv *adv)
 		(adv->network_status & DATA_LEVEL_MASK) >> P_SHIFT_STATUS_DATA;
 
 	return adv->name_match && adv->manufacturer_match &&
-	       (readout_level >= CONFIG_DSA_READOUT_LEVEL);
+	       (readout_level >= readout_level_threshold);
 }
 
 static void scan_recv(const struct bt_le_scan_recv_info *info,
@@ -261,7 +280,7 @@ static void scan_recv(const struct bt_le_scan_recv_info *info,
 		connect_in_progress = false;
 
 		if (!stop_after_finished_requested) {
-			(void)radio_start_scanning();
+			(void)start_scanning();
 		}
 	}
 }
@@ -360,7 +379,7 @@ static void connected(struct bt_conn *conn, uint8_t conn_err)
 		}
 
 		if (!stop_after_finished_requested) {
-			(void)radio_start_scanning();
+			(void)start_scanning();
 		}
 
 		return;
@@ -419,7 +438,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 
 	if (scanning_requested) {
 		LOG_INF("Restarting scan after disconnect");
-		(void)radio_start_scanning();
+		(void)start_scanning();
 	}
 }
 
@@ -465,7 +484,7 @@ int radio_init(const struct radio_callbacks *callbacks)
 	return 0;
 }
 
-int radio_start_scanning(void)
+static int start_scanning(void)
 {
 	int err;
 
@@ -491,6 +510,13 @@ int radio_start_scanning(void)
 	led_set_scanning(true);
 	LOG_INF("Scan started");
 	return 0;
+}
+
+int radio_start_scanning_with_level(uint8_t min_data_level)
+{
+	readout_level_threshold = min_data_level;
+	LOG_INF("Scan requested with minimum data level %u", min_data_level);
+	return start_scanning();
 }
 
 int radio_stop_scanning(void)

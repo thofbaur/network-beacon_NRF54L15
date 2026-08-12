@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/tobia/Documents/DSA2026/NetworkBeacon_nRF54/**)",
+      "Bash(find / -iname \"dk_buttons_and_leds.h\" 2>/dev/null | head -5)",
+      "Read(//c//**)",
+      "Bash(where west *)",
+      "Bash(where ninja *)",
+      "Read(//c/Users/tobia/Documents/DSA2026/**)",
+      "Bash(find / -iname \"dk_buttons_and_leds.h\" 2>/dev/null | head -20)",
+      "Bash(jobs)",
+      "Bash(grep -i \"dk_buttons_and_leds.h$\")"
+    ]
+  }
+}

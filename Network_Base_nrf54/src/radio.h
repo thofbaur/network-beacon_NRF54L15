@@ -16,7 +16,7 @@ struct radio_callbacks {
 };
 
 int radio_init(const struct radio_callbacks *callbacks);
-int radio_start_scanning(void);
+int radio_start_scanning_with_level(uint8_t min_data_level);
 int radio_stop_scanning(void);
 void radio_request_stop_after_finished(void);
 void radio_transfer_finished(void);
