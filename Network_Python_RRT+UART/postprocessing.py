@@ -117,7 +117,7 @@ def aggregate_into(
     lines: list[LogLine],
     summaries: dict[str, BeaconSummary],
     current_timer_ref: dict[str, tuple[int, datetime]],
-    contacts: list[tuple[str, str, datetime]],
+    contacts: list[tuple[str, str, int, datetime]],
     self_reports: list[tuple[str, datetime]],
     eco_sessions: list[tuple[str, datetime, datetime]],
 ) -> tuple[int, int, int]:
@@ -153,7 +153,7 @@ def aggregate_into(
 
         match = CONTACT_RE.match(line.rest)
         if match:
-            other_id, timer_str, _rssi = match.groups()
+            other_id, timer_str, rssi_str = match.groups()
             ref = current_timer_ref.get(line.beacon_id)
             if ref is None:
                 skipped_contacts += 1
@@ -162,7 +162,7 @@ def aggregate_into(
             reference_timer, reference_timestamp = ref
             contact_timestamp = _timer_to_timestamp(reference_timer, reference_timestamp, int(timer_str))
             id1, id2 = sorted((line.beacon_id, other_id), key=id_sort_key)
-            contacts.append((id1, id2, contact_timestamp))
+            contacts.append((id1, id2, int(rssi_str), contact_timestamp))
             continue
 
         match = SELF_REPORT_RE.match(line.rest)
@@ -197,7 +197,7 @@ def aggregate_into(
 def aggregate(lines: list[LogLine]):
     summaries: dict[str, BeaconSummary] = {}
     current_timer_ref: dict[str, tuple[int, datetime]] = {}
-    contacts: list[tuple[str, str, datetime]] = []
+    contacts: list[tuple[str, str, int, datetime]] = []
     self_reports: list[tuple[str, datetime]] = []
     eco_sessions: list[tuple[str, datetime, datetime]] = []
     skipped_contacts, skipped_self_reports, skipped_eco_sessions = aggregate_into(
@@ -248,7 +248,7 @@ class IncrementalPostProcessor:
         self._offsets: dict[Path, int] = {}
         self.summaries: dict[str, BeaconSummary] = {}
         self.current_timer_ref: dict[str, tuple[int, datetime]] = {}
-        self.contacts: list[tuple[str, str, datetime]] = []
+        self.contacts: list[tuple[str, str, int, datetime]] = []
         self.self_reports: list[tuple[str, datetime]] = []
         self.eco_sessions: list[tuple[str, datetime, datetime]] = []
         self.skipped_contacts = 0
@@ -319,12 +319,12 @@ def write_summary_csv(path: Path, summaries: dict[str, BeaconSummary]) -> None:
             )
 
 
-def write_contacts_csv(path: Path, contacts: list[tuple[str, str, datetime]]) -> None:
+def write_contacts_csv(path: Path, contacts: list[tuple[str, str, int, datetime]]) -> None:
     with path.open("w", encoding="utf-8", newline="") as csv_file:
         writer = csv.writer(csv_file)
-        writer.writerow(["ID1", "ID2", "Contact Local Time"])
-        for id1, id2, contact_timestamp in sorted(contacts, key=lambda row: row[2]):
-            writer.writerow([id1, id2, contact_timestamp.strftime(TIMESTAMP_FORMAT)])
+        writer.writerow(["ID1", "ID2", "RSSI", "Contact Local Time"])
+        for id1, id2, rssi, contact_timestamp in sorted(contacts, key=lambda row: row[3]):
+            writer.writerow([id1, id2, rssi, contact_timestamp.strftime(TIMESTAMP_FORMAT)])
 
 
 def write_self_reports_csv(path: Path, self_reports: list[tuple[str, datetime]]) -> None:
