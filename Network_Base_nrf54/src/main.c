@@ -3,7 +3,6 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/printk.h>
 
-#include "common_include.h"
 #include "led.h"
 #include "nus.h"
 #include "output.h"
@@ -11,11 +10,16 @@
 
 LOG_MODULE_REGISTER(network_base, LOG_LEVEL_INF);
 
+/* radio_start_scanning_with_level() takes the raw readout-level nibble
+ * (0-7, per should_connect_to_adv()) advertised by a beacon, not the
+ * shared DATA_LEVEL_* contact-count thresholds beacons use internally to
+ * derive that nibble.
+ */
 static void button_handler(uint32_t button_state, uint32_t has_changed)
 {
 	if ((has_changed & DK_BTN1_MSK) && (button_state & DK_BTN1_MSK)) {
 		LOG_INF("Button0 pressed: start scanning at data level 3");
-		(void)radio_start_scanning_with_level(DATA_LEVEL_3);
+		(void)radio_start_scanning_with_level(3);
 	}
 
 	if ((has_changed & DK_BTN2_MSK) && (button_state & DK_BTN2_MSK)) {
@@ -25,12 +29,12 @@ static void button_handler(uint32_t button_state, uint32_t has_changed)
 
 	if ((has_changed & DK_BTN3_MSK) && (button_state & DK_BTN3_MSK)) {
 		LOG_INF("Button2 pressed: start scanning at data level 2");
-		(void)radio_start_scanning_with_level(DATA_LEVEL_2);
+		(void)radio_start_scanning_with_level(2);
 	}
 
 	if ((has_changed & DK_BTN4_MSK) && (button_state & DK_BTN4_MSK)) {
 		LOG_INF("Button3 pressed: start scanning at data level 1");
-		(void)radio_start_scanning_with_level(DATA_LEVEL_1);
+		(void)radio_start_scanning_with_level(1);
 	}
 }
 

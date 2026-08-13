@@ -401,3 +401,28 @@ is the durability boundary here - going further would add a slow
 USB-serial round trip per batch to guard against a failure mode (base
 crashes with data still queued) with no evidence behind it, versus the
 demonstrated one (BLE-level loss under burst load) this closes.
+
+## 2026-08-13: Firework LED Effect Runs Independent Of Eco Mode
+
+Added `P_MAIN_FIREWORK_ACTIVE`: an explicitly-triggered effect where all
+available LEDs (status/self-report/eco) flicker randomly
+(`led_firework_handler()`, `led.c`), default off, persisted like every
+other LED parameter.
+
+Deliberately does not hook into `led_suspend_blinking()`/
+`led_resume_blinking()` (motion.c's eco-mode entry/exit calls) - those
+only ever touch `led_blink_work` and the eco indicator LED, never
+`led_firework_work`, so firework keeps running through eco transitions
+untouched, by omission rather than by an explicit override. This is a
+command someone turned on - most likely to visually locate one specific
+physical tag - not a normal operating mode, so it shouldn't go dark just
+because the tag also happens to be conserving power. Accepted, un-fixed
+edge case: if `CONFIG_DSA_DEV_ECO_LED_INDICATOR` (dev-only, off in
+production) is also driving the eco LED while firework is active, the two
+will visibly fight over that one LED - not worth coordinating, since both
+sides of that conflict are non-production novelty behavior.
+
+Persistence extends `led.c`'s existing versioned-migration chain by one
+more rung (`LED_PARAMS_STORED_SIZE` 3 -> 4) rather than a new storage key,
+since firework is conceptually one more LED behavior toggle alongside
+`led_active`/`interval_s`, not an independent feature.

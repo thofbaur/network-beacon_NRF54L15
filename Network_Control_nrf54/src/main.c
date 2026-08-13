@@ -26,37 +26,14 @@
 #include <zephyr/sys/util.h>
 #include <zephyr/sys/byteorder.h>
 
-/* Beacon command-protocol constants. Must match
- * BeaconNRF54/shared/common_include.h - the beacon firmware's own copy of
- * this protocol definition.
+#include "common_include.h"
+
+/* Beacon command-protocol constant. Every other command constant
+ * (P_MAIN_*, P_RSSI_*, P_ADV_*, P_MOTION_*, ...) comes from
+ * common_include.h, the authoritative parameter list shared with the
+ * beacon firmware (Network_Beacon_nrf54/src/radio.c).
  */
 #define COMMAND_TARGET_BROADCAST		0xFF
-
-#define P_BASE_MAIN				0x20
-#define P_MAIN_LED_ACTIVE			(P_BASE_MAIN + 1)
-#define P_MAIN_LED_INTERVAL_S			(P_BASE_MAIN + 2)
-#define P_MAIN_RESET_PARAMS			(P_BASE_MAIN + 12)
-
-#define P_BASE_NETWORK				0x60
-#define P_RSSI_NETWORK				(P_BASE_NETWORK + 4)
-#define P_RSSI_LOCATION				(P_BASE_NETWORK + 5)
-#define P_NETWORK_RESET_PARAMS			(P_BASE_NETWORK + 12)
-#define P_TRACKING_ACTIVE			(P_BASE_NETWORK + 13)
-
-#define P_BASE_RADIO				0x80
-#define P_ADV_INTERVAL_MS			(P_BASE_RADIO + 1)
-#define P_ADV_INTERVAL_ECO_MS			(P_BASE_RADIO + 2)
-#define P_SCAN_INTERVAL_MS			(P_BASE_RADIO + 3)
-#define P_SCAN_WINDOW_MS			(P_BASE_RADIO + 5)
-#define P_ECO_SCAN_WINDOW_MS			(P_BASE_RADIO + 6)
-#define P_ECO_SCAN_PERIOD_S			(P_BASE_RADIO + 7)
-#define P_RADIO_RESET_PARAMS			(P_BASE_RADIO + 12)
-#define P_SET_RAD_ACTIVE			(P_BASE_RADIO + 13)
-
-#define P_BASE_MOTION				0xA0
-#define P_MOTION_ACTIVE				(P_BASE_MOTION + 1)
-#define P_MOTION_INACTIVITY_TIMEOUT_S		(P_BASE_MOTION + 2)
-#define P_MOTION_RESET_PARAMS			(P_BASE_MOTION + 12)
 
 /* Splits a 16-bit command value into the big-endian byte pair the beacon
  * expects (it decodes each value with sys_get_be16).
@@ -77,7 +54,7 @@
 /* Beacon id to command, or COMMAND_TARGET_BROADCAST to command every beacon
  * in range.
  */
-#define CMD_TARGET	0xFF
+#define CMD_TARGET	0x07
 
 /* Commands to advertise. Every beacon parameter is listed below, commented
  * out, with a placeholder value. Uncomment a line - and edit its value -
@@ -90,10 +67,11 @@ static const uint8_t mfg_data[] = {
 	/* Main */
 	//   P_MAIN_LED_ACTIVE,		HI(1),	LO(1),		/* 1 = on, 0 = off */
 	// P_MAIN_LED_INTERVAL_S,	HI(5),	LO(5),		/* blink interval, seconds */
+	P_MAIN_FIREWORK_ACTIVE,	HI(0),	LO(0),		/* 1 = on, 0 = off */
 	// P_MAIN_RESET_PARAMS,		HI(0),	LO(0),
 
 	/* Network */
-	 P_RSSI_NETWORK,		HI(100),	LO(100),		/* contact RSSI threshold */
+	// P_RSSI_NETWORK,		HI(100),	LO(100),		/* contact RSSI threshold */
 	// P_RSSI_LOCATION,		HI(60),	LO(60),		/* location RSSI threshold */
 	// P_NETWORK_RESET_PARAMS,	HI(0),	LO(0),
 	 //P_TRACKING_ACTIVE,		HI(1),	LO(1),		/* 1 = on, 0 = off */

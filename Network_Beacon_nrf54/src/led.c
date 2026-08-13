@@ -6,6 +6,7 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
+#include <zephyr/random/random.h>
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/sys/util.h>
@@ -16,7 +17,8 @@
 #include "param_storage.h"
 
 #define LED_PARAMS_STORAGE_KEY "dsa/main"
-#define LED_PARAMS_STORED_SIZE 3U
+#define LED_PARAMS_STORED_SIZE 4U
+#define LED_PARAMS_STORED_SIZE_V2 3U
 
 #if DT_NODE_HAS_STATUS(DT_NODELABEL(led1_green), okay)
 #define LED_NODE DT_NODELABEL(led1_green)
@@ -54,10 +56,14 @@ BUILD_ASSERT(!DT_SAME_NODE(MOTION_ECO_LED_NODE, LED_NODE) &&
 #endif
 BUILD_ASSERT(CONFIG_DSA_LED_BLINK_INTERVAL_MS % 1000 == 0,
 	     "Default status LED interval must use whole seconds");
+BUILD_ASSERT(CONFIG_DSA_FIREWORK_INTERVAL_MIN_MS <=
+	     CONFIG_DSA_FIREWORK_INTERVAL_MAX_MS,
+	     "Firework interval min must not exceed max");
 
 struct led_params {
 	bool led_active;
 	uint16_t interval_s;
+	bool firework_active;
 };
 
 static struct led_params params_led;
@@ -69,6 +75,7 @@ static const struct gpio_dt_spec self_report_led =
 static bool led_ready;
 static bool led_on;
 static bool self_report_led_ready;
+static bool firework_running;
 #if MOTION_ECO_LED_PRESENT
 static const struct gpio_dt_spec eco_led = GPIO_DT_SPEC_GET(MOTION_ECO_LED_NODE, gpios);
 static bool eco_led_ready;
@@ -76,24 +83,28 @@ static bool eco_led_ready;
 
 static void led_blink_handler(struct k_work *work);
 static void led_self_report_handler(struct k_work *work);
+static void led_firework_handler(struct k_work *work);
 static bool led_params_equal(const struct led_params *a,
 			     const struct led_params *b);
 
 static K_WORK_DELAYABLE_DEFINE(led_blink_work, led_blink_handler);
 static K_WORK_DELAYABLE_DEFINE(led_self_report_work,
 			       led_self_report_handler);
+static K_WORK_DELAYABLE_DEFINE(led_firework_work, led_firework_handler);
 
 static void led_params_reset(void)
 {
 	params_led.led_active = IS_ENABLED(CONFIG_DSA_DEFAULT_LED_ACTIVE);
 	params_led.interval_s = CONFIG_DSA_LED_BLINK_INTERVAL_MS / 1000;
+	params_led.firework_active = IS_ENABLED(CONFIG_DSA_DEFAULT_FIREWORK_ACTIVE);
 }
 
 static bool led_params_equal(const struct led_params *a,
 			     const struct led_params *b)
 {
 	return a->led_active == b->led_active &&
-	       a->interval_s == b->interval_s;
+	       a->interval_s == b->interval_s &&
+	       a->firework_active == b->firework_active;
 }
 
 static int led_set(bool on)
@@ -202,6 +213,78 @@ static void led_self_report_handler(struct k_work *work)
 	self_report_led_set(false);
 }
 
+/* Explicitly-triggered visual effect (P_MAIN_FIREWORK_ACTIVE): flickers
+ * randomly across whichever of the three LEDs are actually present/ready,
+ * independent of eco mode - see led_suspend_blinking()/led_resume_blinking()
+ * above, neither of which touch this work item, so firework keeps running
+ * through eco transitions untouched. Deliberate: this is a command the user
+ * turned on, not a normal operating mode that should go dark to save power.
+ */
+static void led_firework_handler(struct k_work *work)
+{
+	int (*candidates[3])(bool);
+	size_t candidate_count = 0;
+	uint32_t delay_ms;
+
+	ARG_UNUSED(work);
+
+	if (!firework_running) {
+		return;
+	}
+
+	led_set(false);
+	self_report_led_set(false);
+	if (led_ready) {
+		candidates[candidate_count++] = led_set;
+	}
+	if (self_report_led_ready) {
+		candidates[candidate_count++] = self_report_led_set;
+	}
+#if MOTION_ECO_LED_PRESENT
+	eco_led_set(false);
+	if (eco_led_ready) {
+		candidates[candidate_count++] = eco_led_set;
+	}
+#endif
+
+	if (candidate_count > 0) {
+		candidates[sys_rand32_get() % candidate_count](true);
+	}
+
+	delay_ms = CONFIG_DSA_FIREWORK_INTERVAL_MIN_MS +
+		   sys_rand32_get() %
+		   (CONFIG_DSA_FIREWORK_INTERVAL_MAX_MS -
+		    CONFIG_DSA_FIREWORK_INTERVAL_MIN_MS + 1);
+	k_work_reschedule(&led_firework_work, K_MSEC(delay_ms));
+}
+
+static void led_firework_start(void)
+{
+	if (firework_running) {
+		return;
+	}
+	firework_running = true;
+
+	led_stop_blinking();
+	k_work_reschedule(&led_firework_work, K_NO_WAIT);
+}
+
+static void led_firework_stop(void)
+{
+	if (!firework_running) {
+		return;
+	}
+	firework_running = false;
+
+	k_work_cancel_delayable(&led_firework_work);
+	led_set(false);
+	self_report_led_set(false);
+#if MOTION_ECO_LED_PRESENT
+	eco_led_set(false);
+#endif
+	led_schedule_next_blink();
+}
+
 static void led_gpio_init(void)
 {
 	int err;
@@ -277,6 +360,10 @@ void led_init(void)
 #if MOTION_ECO_LED_PRESENT
 	eco_led_gpio_init();
 #endif
+
+	if (params_led.firework_active) {
+		led_firework_start();
+	}
 }
 
 void led_signal_self_report(void)
@@ -318,6 +405,15 @@ void led_apply_command(uint8_t parameter, uint16_t value)
 		params_led.interval_s = value;
 		printk("Status LED interval set to %u s\n", value);
 		break;
+	case P_MAIN_FIREWORK_ACTIVE:
+		if (value > 1U) {
+			printk("Rejecting invalid firework-active value %u\n", value);
+			return;
+		}
+		params_led.firework_active = value != 0;
+		printk("Firework effect %s\n",
+		       params_led.firework_active ? "enabled" : "disabled");
+		break;
 	case P_MAIN_RESET_PARAMS:
 		led_params_reset();
 		printk("LED parameters reset\n");
@@ -338,10 +434,15 @@ void led_command_commit(void)
 	if (!led_params_equal(&command_old_params_led, &params_led)) {
 		int err = led_params_save();
 
-		if (params_led.led_active) {
-			led_schedule_next_blink();
+		if (params_led.firework_active) {
+			led_firework_start();
 		} else {
-			led_stop_blinking();
+			led_firework_stop();
+			if (params_led.led_active) {
+				led_schedule_next_blink();
+			} else {
+				led_stop_blinking();
+			}
 		}
 		if (err) {
 			printk("Failed to save LED parameters (err %d)\n", err);
@@ -352,22 +453,46 @@ void led_command_commit(void)
 int led_params_load(void)
 {
 	uint8_t stored[LED_PARAMS_STORED_SIZE];
+	uint8_t stored_v2[LED_PARAMS_STORED_SIZE_V2];
 	uint8_t old_active;
 	int err;
 
 	err = param_storage_load(LED_PARAMS_STORAGE_KEY, stored, sizeof(stored));
 	if (!err) {
-		if (stored[0] > 1U || sys_get_be16(&stored[1]) == 0U) {
+		if (stored[0] > 1U || sys_get_be16(&stored[1]) == 0U ||
+		    stored[3] > 1U) {
 			device_set_storage_fault(STORAGE_FAULT_LED_PARAMS, true);
 			return -EBADMSG;
 		}
 		params_led.led_active = stored[0] != 0U;
 		params_led.interval_s = sys_get_be16(&stored[1]);
+		params_led.firework_active = stored[3] != 0U;
 		device_set_storage_fault(STORAGE_FAULT_LED_PARAMS, false);
 		return 0;
 	}
 
-	/* Migrate the previous versioned record, which only stored active. */
+	/* Migrate the previous versioned record (active + interval, no
+	 * firework byte yet) - firework_active keeps whatever
+	 * led_params_reset() already set it to (the Kconfig default).
+	 */
+	err = param_storage_load(LED_PARAMS_STORAGE_KEY, stored_v2,
+				 sizeof(stored_v2));
+	if (!err) {
+		if (stored_v2[0] > 1U || sys_get_be16(&stored_v2[1]) == 0U) {
+			device_set_storage_fault(STORAGE_FAULT_LED_PARAMS, true);
+			return -EBADMSG;
+		}
+		params_led.led_active = stored_v2[0] != 0U;
+		params_led.interval_s = sys_get_be16(&stored_v2[1]);
+		err = led_params_save();
+		if (!err) {
+			printk("Migrated LED parameters with default firework setting\n");
+		}
+		device_set_storage_fault(STORAGE_FAULT_LED_PARAMS, err != 0);
+		return err;
+	}
+
+	/* Migrate the older versioned record, which only stored active. */
 	err = param_storage_load(LED_PARAMS_STORAGE_KEY,
 				 &old_active, sizeof(old_active));
 	if (!err) {
@@ -410,6 +535,7 @@ int led_params_save(void)
 
 	stored[0] = params_led.led_active ? 1U : 0U;
 	sys_put_be16(params_led.interval_s, &stored[1]);
+	stored[3] = params_led.firework_active ? 1U : 0U;
 
 	int err = param_storage_save(LED_PARAMS_STORAGE_KEY,
 				    stored, sizeof(stored));

@@ -74,6 +74,25 @@ config DSA_SELF_REPORT_LED_ON_MS
 	default 2000
 	range 1 60000
 
+config DSA_DEFAULT_FIREWORK_ACTIVE
+	bool "Enable the firework LED effect by default"
+	default n
+	help
+	  When active, all available LEDs flicker randomly instead of their
+	  normal jobs (status blink, self-report flash, eco indicator).
+	  Intended as an explicitly-triggered visual effect (e.g. to locate a
+	  specific physical tag), not a normal operating mode.
+
+config DSA_FIREWORK_INTERVAL_MIN_MS
+	int "Firework effect minimum LED on-time in milliseconds"
+	default 60
+	range 1 60000
+
+config DSA_FIREWORK_INTERVAL_MAX_MS
+	int "Firework effect maximum LED on-time in milliseconds"
+	default 250
+	range 1 60000
+
 endmenu
 
 menu "DSA network buffering"
