@@ -30,3 +30,8 @@ build*/
 
 # Python
 __pycache__/
+Network_Python_RRT+UART/beacon_summary.csv
+Network_Python_RRT+UART/contacts.csv
+Network_Python_RRT+UART/eco_sessions.csv
+Network_Python_RRT+UART/self_reports.csv
+Network_Beacon_nrf54/.claude/settings.json
