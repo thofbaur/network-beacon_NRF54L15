@@ -619,6 +619,7 @@ def main(argv: list[str]) -> int:
         output.directory / postprocessing.DEFAULT_CONTACTS_CSV,
         output.directory / postprocessing.DEFAULT_SELF_REPORTS_CSV,
         output.directory / postprocessing.DEFAULT_ECO_SESSIONS_CSV,
+        output.directory / postprocessing.DEFAULT_CURRENT_ISSUES_CSV,
     )
 
     try:

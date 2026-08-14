@@ -17,6 +17,9 @@ DEFAULT_SUMMARY_CSV = "beacon_summary.csv"
 DEFAULT_CONTACTS_CSV = "contacts.csv"
 DEFAULT_SELF_REPORTS_CSV = "self_reports.csv"
 DEFAULT_ECO_SESSIONS_CSV = "eco_sessions.csv"
+DEFAULT_CURRENT_ISSUES_CSV = "current_issues.csv"
+DEFAULT_STALE_HOURS = 24
+DEFAULT_LOW_BATTERY_MV = 2650
 
 # Sanity bounds for this deployment. A beacon occasionally dumps a handful of
 # corrupted trailing records (stale/uninitialized flash bytes read past its
@@ -316,16 +319,22 @@ class IncrementalPostProcessor:
         contacts_csv: Path,
         self_reports_csv: Path,
         eco_sessions_csv: Path,
+        current_issues_csv: Path,
         valid_date_start: date = DEFAULT_VALID_DATE_START,
         valid_date_end: date = DEFAULT_VALID_DATE_END,
+        stale_after: timedelta = timedelta(hours=DEFAULT_STALE_HOURS),
+        low_battery_mv: int = DEFAULT_LOW_BATTERY_MV,
     ) -> None:
         self.log_dir = log_dir
         self.summary_csv = summary_csv
         self.contacts_csv = contacts_csv
         self.self_reports_csv = self_reports_csv
         self.eco_sessions_csv = eco_sessions_csv
+        self.current_issues_csv = current_issues_csv
         self.valid_date_start = valid_date_start
         self.valid_date_end = valid_date_end
+        self.stale_after = stale_after
+        self.low_battery_mv = low_battery_mv
         self._offsets: dict[Path, int] = {}
         self.summaries: dict[str, BeaconSummary] = {}
         self.current_timer_ref: dict[str, tuple[int, datetime]] = {}
@@ -379,6 +388,9 @@ class IncrementalPostProcessor:
         write_contacts_csv(self.contacts_csv, self.contacts)
         write_self_reports_csv(self.self_reports_csv, self.self_reports)
         write_eco_sessions_csv(self.eco_sessions_csv, self.eco_sessions)
+        write_current_issues_csv(
+            self.current_issues_csv, self.summaries, datetime.now(), self.stale_after, self.low_battery_mv
+        )
         return True
 
 
@@ -435,6 +447,57 @@ def read_summary_csv(path: Path) -> dict[str, BeaconSummary]:
             )
             summaries[beacon_id] = BeaconSummary(beacon_id, last_seen, last_voltage_mv, last_status_byte)
     return summaries
+
+
+def describe_beacon_issues(
+    summary: BeaconSummary,
+    now: datetime,
+    stale_after: timedelta = timedelta(hours=DEFAULT_STALE_HOURS),
+    low_battery_mv: int = DEFAULT_LOW_BATTERY_MV,
+) -> list[str]:
+    """Plain-text list of a beacon's current issues, if any: never/not-recently seen,
+    low battery, and any fault bits set in its last reported Status byte."""
+    issues: list[str] = []
+
+    if summary.last_seen is None:
+        issues.append("Never seen")
+    elif now - summary.last_seen > stale_after:
+        stale_hours = stale_after.total_seconds() / 3600
+        issues.append(
+            f"Not seen in over {stale_hours:g}h (last seen {summary.last_seen.strftime(TIMESTAMP_FORMAT)})"
+        )
+
+    if summary.last_voltage_mv is not None and summary.last_voltage_mv < low_battery_mv:
+        issues.append(f"Low battery: {summary.last_voltage_mv} mV (below {low_battery_mv} mV)")
+
+    for label, bit_value in zip(ERROR_BIT_LABELS, decode_error_bits(summary.last_status_byte)):
+        if bit_value:
+            issues.append(label)
+
+    return issues
+
+
+def write_current_issues_csv(
+    path: Path,
+    summaries: dict[str, BeaconSummary],
+    now: datetime,
+    stale_after: timedelta = timedelta(hours=DEFAULT_STALE_HOURS),
+    low_battery_mv: int = DEFAULT_LOW_BATTERY_MV,
+) -> int:
+    """Write one row per (beacon, issue) for every beacon that currently has one.
+
+    Returns the number of distinct beacons with at least one issue.
+    """
+    beacon_ids_with_issues: set[str] = set()
+    with path.open("w", encoding="utf-8", newline="") as csv_file:
+        writer = csv.writer(csv_file)
+        writer.writerow(["ID", "Issue"])
+        for beacon_id in sorted(summaries, key=id_sort_key):
+            for issue in describe_beacon_issues(summaries[beacon_id], now, stale_after, low_battery_mv):
+                writer.writerow([beacon_id, issue])
+                beacon_ids_with_issues.add(beacon_id)
+
+    return len(beacon_ids_with_issues)
 
 
 def contacts_csv_path_for_day(base_path: Path, day: date) -> Path:
@@ -552,6 +615,34 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help=f"Output path for the eco session CSV. Default: <log-dir>/{DEFAULT_ECO_SESSIONS_CSV}",
     )
     parser.add_argument(
+        "--current-issues-csv",
+        type=Path,
+        default=None,
+        help=(
+            "Output path for the current-issues CSV (one row per beacon/issue: "
+            "fault bits, not seen recently, low battery). "
+            f"Default: <log-dir>/{DEFAULT_CURRENT_ISSUES_CSV}"
+        ),
+    )
+    parser.add_argument(
+        "--stale-hours",
+        type=float,
+        default=DEFAULT_STALE_HOURS,
+        help=(
+            "Flag a beacon as an issue if it hasn't been seen within this many "
+            f"hours. Default: {DEFAULT_STALE_HOURS}"
+        ),
+    )
+    parser.add_argument(
+        "--low-battery-mv",
+        type=int,
+        default=DEFAULT_LOW_BATTERY_MV,
+        help=(
+            "Flag a beacon as an issue if its last reported battery voltage is "
+            f"below this many mV. Default: {DEFAULT_LOW_BATTERY_MV}"
+        ),
+    )
+    parser.add_argument(
         "--valid-date-start",
         type=date.fromisoformat,
         default=DEFAULT_VALID_DATE_START,
@@ -580,6 +671,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         args.self_reports_csv = args.log_dir / DEFAULT_SELF_REPORTS_CSV
     if args.eco_sessions_csv is None:
         args.eco_sessions_csv = args.log_dir / DEFAULT_ECO_SESSIONS_CSV
+    if args.current_issues_csv is None:
+        args.current_issues_csv = args.log_dir / DEFAULT_CURRENT_ISSUES_CSV
     return args
 
 
@@ -617,6 +710,13 @@ def main(argv: list[str]) -> int:
     contacts_paths = write_contacts_csv(args.contacts_csv, contacts)
     write_self_reports_csv(args.self_reports_csv, self_reports)
     write_eco_sessions_csv(args.eco_sessions_csv, eco_sessions)
+    issue_count = write_current_issues_csv(
+        args.current_issues_csv,
+        summaries,
+        datetime.now(),
+        timedelta(hours=args.stale_hours),
+        args.low_battery_mv,
+    )
 
     print(f"Processed {len(log_paths)} log file(s), {len(lines)} parsed lines.")
     print(f"Wrote {len(summaries)} beacon summary rows to {args.summary_csv}")
@@ -630,6 +730,7 @@ def main(argv: list[str]) -> int:
         print(f"Wrote 0 contact rows (no daily CSVs written)")
     print(f"Wrote {len(self_reports)} self-report rows to {args.self_reports_csv}")
     print(f"Wrote {len(eco_sessions)} eco session rows to {args.eco_sessions_csv}")
+    print(f"Wrote {issue_count} beacon(s) with current issues to {args.current_issues_csv}")
     if skipped_contacts:
         print(
             f"Skipped {skipped_contacts} contact entries with no preceding "
