@@ -54,7 +54,7 @@
 /* Beacon id to command, or COMMAND_TARGET_BROADCAST to command every beacon
  * in range.
  */
-#define CMD_TARGET	0xFF
+#define CMD_TARGET	0x86
 
 /* Commands to advertise. Every beacon parameter is listed below, commented
  * out, with a placeholder value. Uncomment a line - and edit its value -
@@ -84,10 +84,10 @@ static const uint8_t mfg_data[] = {
 	// P_ECO_SCAN_WINDOW_MS,	HI(200), LO(200),
 	// P_ECO_SCAN_PERIOD_S,		HI(30),	LO(30),
 	// P_RADIO_RESET_PARAMS,	HI(0),	LO(0),
-	// P_SET_RAD_ACTIVE,		HI(1),	LO(1),		/* 1 = high activity, 0 = eco */
+	 P_SET_RAD_ACTIVE,		HI(1),	LO(1),		/* 1 = high activity, 0 = eco */
 
 	/* Motion */
-	 P_MOTION_ACTIVE,		HI(1),	LO(1),		/* 1 = on, 0 = off */
+	 P_MOTION_ACTIVE,		HI(0),	LO(0),		/* 1 = on, 0 = off */
 	// P_MOTION_INACTIVITY_TIMEOUT_S, HI(60), LO(60),
 	// P_MOTION_RESET_PARAMS,	HI(0),	LO(0),
 };
