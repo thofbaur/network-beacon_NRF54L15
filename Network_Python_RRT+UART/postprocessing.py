@@ -18,8 +18,32 @@ DEFAULT_CONTACTS_CSV = "contacts.csv"
 DEFAULT_SELF_REPORTS_CSV = "self_reports.csv"
 DEFAULT_ECO_SESSIONS_CSV = "eco_sessions.csv"
 DEFAULT_CURRENT_ISSUES_CSV = "current_issues.csv"
+DEFAULT_SANITY_FINDINGS_CSV = "sanity_findings.csv"
 DEFAULT_STALE_HOURS = 36
 DEFAULT_LOW_BATTERY_MV = 2650
+
+# Names of the sanity checks that can skip an entry during aggregation, in
+# the order they should appear as sanity_findings.csv columns.
+CHECK_BEACON_ID_RANGE = "Beacon ID out of range"
+CHECK_ID2_RANGE = "Contact ID2 out of range"
+CHECK_RSSI_RANGE = "Contact RSSI out of range"
+CHECK_CONTACT_NO_REF = "Contact missing Current Timer"
+CHECK_CONTACT_TIMESTAMP = "Contact timestamp implausible"
+CHECK_SELF_REPORT_NO_REF = "Self-report missing Current Timer"
+CHECK_SELF_REPORT_TIMESTAMP = "Self-report timestamp implausible"
+CHECK_ECO_SESSION_NO_REF = "Eco-session missing Current Timer"
+CHECK_ECO_SESSION_TIMESTAMP = "Eco-session timestamp implausible"
+SANITY_CHECK_NAMES = (
+    CHECK_BEACON_ID_RANGE,
+    CHECK_ID2_RANGE,
+    CHECK_RSSI_RANGE,
+    CHECK_CONTACT_NO_REF,
+    CHECK_CONTACT_TIMESTAMP,
+    CHECK_SELF_REPORT_NO_REF,
+    CHECK_SELF_REPORT_TIMESTAMP,
+    CHECK_ECO_SESSION_NO_REF,
+    CHECK_ECO_SESSION_TIMESTAMP,
+)
 
 # Sanity bounds for this deployment. A beacon occasionally dumps a handful of
 # corrupted trailing records (stale/uninitialized flash bytes read past its
@@ -30,10 +54,10 @@ DEFAULT_LOW_BATTERY_MV = 2650
 DEFAULT_VALID_ID_MIN = 1
 DEFAULT_VALID_ID_MAX = 170
 DEFAULT_VALID_EXTRA_IDS = frozenset({252, 253, 254})
-DEFAULT_VALID_DATE_START = date(2026, 8, 13)
+DEFAULT_VALID_DATE_START = date(2026, 8, 12)
 DEFAULT_VALID_DATE_END = date(2026, 8, 29)
 DEFAULT_VALID_RSSI_MIN = -110
-DEFAULT_VALID_RSSI_MAX = -20
+DEFAULT_VALID_RSSI_MAX = -10
 
 # Bit layout of the radio/storage fault byte forwarded as "Status: N" (see
 # shared/common_include.h and Production_HowTo.md, Part 2). All bits are
@@ -161,19 +185,24 @@ def is_within_valid_span(timestamp: datetime, valid_date_start: date, valid_date
 
 def is_plausible_event_timestamp(
     timestamp: datetime,
-    reference_timestamp: datetime,
+    message_timestamp: datetime,
     valid_date_start: date,
     valid_date_end: date,
 ) -> bool:
     """Whether a timer-resolved past event's timestamp is plausible.
 
-    A contact/self-report/eco-session is always resolved relative to a
-    "Current Timer" reference, which stands for "now" for that record - so
-    the event can never be later than reference_timestamp. Corrupted timer
-    values that undershoot the reference only slightly can still land inside
-    the valid date span by chance, so both checks are needed.
+    A contact/self-report/eco-session is resolved relative to a "Current
+    Timer" reference, but that reference may now be a later one than the
+    event itself (see aggregate_into's fallback to a following reference
+    when no preceding one exists) - so the event's resolved timestamp is no
+    longer bounded by the reference's own timestamp. It's still bounded by
+    something more fundamental: it can never be later than message_timestamp,
+    the wall-clock moment this log line itself was captured, since an event
+    can't be reported before it happens. Corrupted timer values that
+    undershoot only slightly can still land inside the valid date span by
+    chance, so both checks are needed.
     """
-    return timestamp <= reference_timestamp and is_within_valid_span(
+    return timestamp <= message_timestamp and is_within_valid_span(
         timestamp, valid_date_start, valid_date_end
     )
 
@@ -187,32 +216,56 @@ def aggregate_into(
     eco_sessions: list[tuple[str, datetime, datetime]],
     valid_date_start: date = DEFAULT_VALID_DATE_START,
     valid_date_end: date = DEFAULT_VALID_DATE_END,
-    skipped_by_source: Optional[dict[Path, int]] = None,
+    skipped_by_source: Optional[dict[Path, dict[str, int]]] = None,
 ) -> tuple[int, int, int, int]:
     """Fold lines into the given (possibly already populated) aggregation state.
 
     Lets callers process a batch of new lines on top of state carried over
     from earlier batches, instead of rebuilding everything from scratch.
     Returns the number of contact, self-report, and eco session entries
-    skipped for lack of a preceding Current Timer reference, plus the number
-    of entries dropped as corrupted: an out-of-roster beacon ID, an
-    out-of-range RSSI, or a timer-resolved timestamp outside
-    [valid_date_start, valid_date_end]. If skipped_by_source is given, it is
-    incremented per line.source for every entry skipped for any reason.
+    skipped for lack of any Current Timer reference (neither a preceding nor
+    a following one, within this batch), plus the number of entries dropped
+    as corrupted: an out-of-roster beacon ID, an out-of-range RSSI, or a
+    timer-resolved timestamp outside [valid_date_start, valid_date_end]. If
+    skipped_by_source is given, skipped_by_source[source][check_name] (one of
+    the CHECK_* / SANITY_CHECK_NAMES constants) is incremented for every
+    entry skipped for that reason.
+
+    A beacon's own clock can reset (e.g. reboot) while it still holds a
+    backlog of contacts stored under the old tick count, making their timer
+    values exceed the next "Current Timer" reference even though they're
+    real, legitimate history. So a preceding reference is preferred, but a
+    following one (the next "Current Timer" for that beacon within this same
+    batch) is used when no preceding one is available yet, rather than
+    dropping the entry outright.
     """
     skipped_contacts = 0
     skipped_self_reports = 0
     skipped_eco_sessions = 0
     skipped_invalid = 0
 
-    def note_skip(source: Path) -> None:
+    def note_skip(source: Path, check_name: str) -> None:
         if skipped_by_source is not None:
-            skipped_by_source[source] = skipped_by_source.get(source, 0) + 1
+            by_check = skipped_by_source.setdefault(source, {})
+            by_check[check_name] = by_check.get(check_name, 0) + 1
+
+    # Earliest "Current Timer" occurrence per beacon within this batch, used
+    # as a fallback reference for entries with no preceding one yet. Since
+    # this is the first such line for that beacon in the whole batch, any
+    # entry still lacking a preceding reference at the point it's processed
+    # must chronologically precede it - so this is exactly "the next one".
+    first_timer_ref: dict[str, tuple[int, datetime]] = {}
+    for line in lines:
+        if line.beacon_id in first_timer_ref or not is_valid_beacon_id(line.beacon_id):
+            continue
+        match = CURRENT_TIMER_RE.match(line.rest)
+        if match:
+            first_timer_ref[line.beacon_id] = (int(match.group(1)), line.timestamp)
 
     for line in lines:
         if not is_valid_beacon_id(line.beacon_id):
             skipped_invalid += 1
-            note_skip(line.source)
+            note_skip(line.source, CHECK_BEACON_ID_RANGE)
             continue
 
         summary = summaries.setdefault(line.beacon_id, BeaconSummary(line.beacon_id))
@@ -237,24 +290,28 @@ def aggregate_into(
         if match:
             other_id, timer_str, rssi_str = match.groups()
             rssi = int(rssi_str)
-            if not is_valid_beacon_id(other_id) or not is_valid_rssi(rssi):
+            if not is_valid_beacon_id(other_id):
                 skipped_invalid += 1
-                note_skip(line.source)
+                note_skip(line.source, CHECK_ID2_RANGE)
+                continue
+            if not is_valid_rssi(rssi):
+                skipped_invalid += 1
+                note_skip(line.source, CHECK_RSSI_RANGE)
                 continue
 
-            ref = current_timer_ref.get(line.beacon_id)
+            ref = current_timer_ref.get(line.beacon_id) or first_timer_ref.get(line.beacon_id)
             if ref is None:
                 skipped_contacts += 1
-                note_skip(line.source)
+                note_skip(line.source, CHECK_CONTACT_NO_REF)
                 continue
 
             reference_timer, reference_timestamp = ref
             contact_timestamp = _timer_to_timestamp(reference_timer, reference_timestamp, int(timer_str))
             if not is_plausible_event_timestamp(
-                contact_timestamp, reference_timestamp, valid_date_start, valid_date_end
+                contact_timestamp, line.timestamp, valid_date_start, valid_date_end
             ):
                 skipped_invalid += 1
-                note_skip(line.source)
+                note_skip(line.source, CHECK_CONTACT_TIMESTAMP)
                 continue
 
             id1, id2 = sorted((line.beacon_id, other_id), key=id_sort_key)
@@ -263,19 +320,19 @@ def aggregate_into(
 
         match = SELF_REPORT_RE.match(line.rest)
         if match:
-            ref = current_timer_ref.get(line.beacon_id)
+            ref = current_timer_ref.get(line.beacon_id) or first_timer_ref.get(line.beacon_id)
             if ref is None:
                 skipped_self_reports += 1
-                note_skip(line.source)
+                note_skip(line.source, CHECK_SELF_REPORT_NO_REF)
                 continue
 
             reference_timer, reference_timestamp = ref
             report_timestamp = _timer_to_timestamp(reference_timer, reference_timestamp, int(match.group(1)))
             if not is_plausible_event_timestamp(
-                report_timestamp, reference_timestamp, valid_date_start, valid_date_end
+                report_timestamp, line.timestamp, valid_date_start, valid_date_end
             ):
                 skipped_invalid += 1
-                note_skip(line.source)
+                note_skip(line.source, CHECK_SELF_REPORT_TIMESTAMP)
                 continue
 
             self_reports.append((line.beacon_id, report_timestamp))
@@ -283,10 +340,10 @@ def aggregate_into(
 
         match = ECO_SESSION_RE.match(line.rest)
         if match:
-            ref = current_timer_ref.get(line.beacon_id)
+            ref = current_timer_ref.get(line.beacon_id) or first_timer_ref.get(line.beacon_id)
             if ref is None:
                 skipped_eco_sessions += 1
-                note_skip(line.source)
+                note_skip(line.source, CHECK_ECO_SESSION_NO_REF)
                 continue
 
             reference_timer, reference_timestamp = ref
@@ -294,13 +351,13 @@ def aggregate_into(
             enter_timestamp = _timer_to_timestamp(reference_timer, reference_timestamp, enter_timer)
             exit_timestamp = _timer_to_timestamp(reference_timer, reference_timestamp, exit_timer)
             if not (
-                is_plausible_event_timestamp(enter_timestamp, reference_timestamp, valid_date_start, valid_date_end)
+                is_plausible_event_timestamp(enter_timestamp, line.timestamp, valid_date_start, valid_date_end)
                 and is_plausible_event_timestamp(
-                    exit_timestamp, reference_timestamp, valid_date_start, valid_date_end
+                    exit_timestamp, line.timestamp, valid_date_start, valid_date_end
                 )
             ):
                 skipped_invalid += 1
-                note_skip(line.source)
+                note_skip(line.source, CHECK_ECO_SESSION_TIMESTAMP)
                 continue
 
             eco_sessions.append((line.beacon_id, enter_timestamp, exit_timestamp))
@@ -515,6 +572,26 @@ def write_current_issues_csv(
     return len(beacon_ids_with_issues)
 
 
+def write_sanity_findings_csv(
+    path: Path,
+    log_paths: list[Path],
+    skipped_by_source: dict[Path, dict[str, int]],
+) -> None:
+    """Write one row per log file: how many entries each sanity check skipped.
+
+    Every log file gets a row, including ones with nothing skipped, so the
+    table is a complete record of what was read, not just where problems
+    were found.
+    """
+    with path.open("w", encoding="utf-8", newline="") as csv_file:
+        writer = csv.writer(csv_file)
+        writer.writerow(["Log File", *SANITY_CHECK_NAMES, "Total"])
+        for log_path in log_paths:
+            by_check = skipped_by_source.get(log_path, {})
+            counts = [by_check.get(check_name, 0) for check_name in SANITY_CHECK_NAMES]
+            writer.writerow([log_path.name, *counts, sum(counts)])
+
+
 def contacts_csv_path_for_day(base_path: Path, day: date) -> Path:
     """Derive the per-day contacts CSV path from the base --contacts-csv path.
 
@@ -640,6 +717,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--sanity-findings-csv",
+        type=Path,
+        default=None,
+        help=(
+            "Output path for the sanity-findings CSV: one row per log file "
+            "read, with a column per sanity check showing how many entries it "
+            f"skipped. Default: <log-dir>/{DEFAULT_SANITY_FINDINGS_CSV}"
+        ),
+    )
+    parser.add_argument(
         "--stale-hours",
         type=float,
         default=DEFAULT_STALE_HOURS,
@@ -688,6 +775,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         args.eco_sessions_csv = args.log_dir / DEFAULT_ECO_SESSIONS_CSV
     if args.current_issues_csv is None:
         args.current_issues_csv = args.log_dir / DEFAULT_CURRENT_ISSUES_CSV
+    if args.sanity_findings_csv is None:
+        args.sanity_findings_csv = args.log_dir / DEFAULT_SANITY_FINDINGS_CSV
     return args
 
 
@@ -710,7 +799,7 @@ def main(argv: list[str]) -> int:
     eco_sessions = read_eco_sessions_csv(args.eco_sessions_csv)
     current_timer_ref: dict[str, tuple[int, datetime]] = {}
     contacts: list[tuple[str, str, int, datetime]] = []
-    skipped_by_source: dict[Path, int] = {}
+    skipped_by_source: dict[Path, dict[str, int]] = {}
 
     skipped_contacts, skipped_self_reports, skipped_eco_sessions, skipped_invalid = aggregate_into(
         lines, summaries, current_timer_ref, contacts, self_reports, eco_sessions,
@@ -733,6 +822,7 @@ def main(argv: list[str]) -> int:
         timedelta(hours=args.stale_hours),
         args.low_battery_mv,
     )
+    write_sanity_findings_csv(args.sanity_findings_csv, log_paths, skipped_by_source)
 
     print(f"Processed {len(log_paths)} log file(s), {len(lines)} parsed lines.")
     print(f"Wrote {len(summaries)} beacon summary rows to {args.summary_csv}")
@@ -747,6 +837,7 @@ def main(argv: list[str]) -> int:
     print(f"Wrote {len(self_reports)} self-report rows to {args.self_reports_csv}")
     print(f"Wrote {len(eco_sessions)} eco session rows to {args.eco_sessions_csv}")
     print(f"Wrote {issue_count} beacon(s) with current issues to {args.current_issues_csv}")
+    print(f"Wrote sanity findings for {len(log_paths)} log file(s) to {args.sanity_findings_csv}")
     if skipped_contacts:
         print(
             f"Skipped {skipped_contacts} contact entries with no preceding "
@@ -773,7 +864,7 @@ def main(argv: list[str]) -> int:
     if total_skipped:
         print("Skipped entries by log file:")
         for path in log_paths:
-            print(f"  {path.name}: {skipped_by_source.get(path, 0)}")
+            print(f"  {path.name}: {sum(skipped_by_source.get(path, {}).values())}")
 
     return 0
 
