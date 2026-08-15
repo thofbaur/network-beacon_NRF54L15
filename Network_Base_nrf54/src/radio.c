@@ -26,9 +26,14 @@ LOG_MODULE_DECLARE(network_base);
 #define DSA_CONN_TIMEOUT 400U
 #define DSA_FINISH_DISCONNECT_DELAY K_MSEC(50)
 
+/* Build-time allow-list of beacon names. Leave empty to accept any name. */
 static const char * const dsa_allowed_adv_names[] = {
-	"DSA",
+	//"DSA",
 	"DSL",
+};
+
+/* Build-time allow-list of beacon ids. Leave empty to accept any id. */
+static const uint8_t dsa_allowed_adv_ids[] = {
 };
 
 struct dsa_adv {
@@ -181,10 +186,29 @@ static void finish_disconnect_handler(struct k_work *work)
 
 static bool adv_name_allowed(const uint8_t *data, uint8_t len)
 {
+	if (ARRAY_SIZE(dsa_allowed_adv_names) == 0) {
+		return true;
+	}
+
 	for (size_t i = 0; i < ARRAY_SIZE(dsa_allowed_adv_names); i++) {
 		const char *name = dsa_allowed_adv_names[i];
 
 		if ((len == strlen(name)) && (memcmp(data, name, len) == 0)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static bool adv_id_allowed(uint8_t id)
+{
+	if (ARRAY_SIZE(dsa_allowed_adv_ids) == 0) {
+		return true;
+	}
+
+	for (size_t i = 0; i < ARRAY_SIZE(dsa_allowed_adv_ids); i++) {
+		if (dsa_allowed_adv_ids[i] == id) {
 			return true;
 		}
 	}
@@ -226,7 +250,8 @@ static bool should_connect_to_adv(const struct dsa_adv *adv)
 		(adv->network_status & DATA_LEVEL_MASK) >> P_SHIFT_STATUS_DATA;
 
 	return adv->name_match && adv->manufacturer_match &&
-	       (readout_level >= readout_level_threshold);
+	       (readout_level >= readout_level_threshold) &&
+	       adv_id_allowed(adv->id);
 }
 
 static void scan_recv(const struct bt_le_scan_recv_info *info,
