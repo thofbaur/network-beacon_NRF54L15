@@ -15,6 +15,7 @@
 
 #include "common_include.h"
 #include "led.h"
+#include "output.h"
 
 LOG_MODULE_DECLARE(network_base);
 
@@ -49,6 +50,7 @@ static struct radio_callbacks radio_cb;
 static bool scanning_requested;
 static bool stop_after_finished_requested;
 static bool connect_in_progress;
+static bool waiting_for_output_drain;
 static bool nus_ready_notified;
 static bool transfer_finish_pending;
 static uint8_t pending_beacon_id;
@@ -275,6 +277,25 @@ static void scan_recv(const struct bt_le_scan_recv_info *info,
 	if (!should_connect_to_adv(&adv)) {
 		return;
 	}
+
+	if (!output_queue_is_drained()) {
+		/* Don't connect to the next beacon while the previous one's
+		 * output backlog is still draining - a new connection's
+		 * earliest notifications (including its Current Timer
+		 * preamble, which isn't ack/retried like DATA is - see
+		 * nus.c) would compete with that backlog for the same
+		 * limited queue slots and risk being dropped under load. The
+		 * beacon keeps advertising, so scan_recv() will simply be
+		 * called again shortly once the queue clears.
+		 */
+		if (!waiting_for_output_drain) {
+			LOG_INF("Deferring connection to beacon id=%u until output queue drains",
+				adv.id);
+			waiting_for_output_drain = true;
+		}
+		return;
+	}
+	waiting_for_output_drain = false;
 
 	bt_addr_le_to_str(info->addr, addr, sizeof(addr));
 	LOG_INF("DSA beacon matched: addr=%s id=%u radio=0x%02x network=0x%02x",

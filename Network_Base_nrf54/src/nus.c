@@ -26,7 +26,16 @@ LOG_MODULE_DECLARE(network_base);
 static struct bt_nus_client nus_client;
 static nus_finished_cb_t finished_cb;
 static struct k_work_delayable rx_idle_timeout_work;
-static uint8_t current_beacon_id;
+/* The beacon ID a received notification gets tagged with must be looked up
+ * by which connection it actually arrived on (nus->conn), not read from a
+ * bare "whichever beacon is current right now" global: nus_client is a
+ * single instance reused across connections, and if a notification from the
+ * previous beacon is still being processed when the next one connects, a
+ * global updated only at connect time would mislabel it under the new
+ * beacon's ID instead of the one it actually came from.
+ */
+static struct bt_conn *tagged_conn;
+static uint8_t tagged_beacon_id;
 
 K_SEM_DEFINE(nus_write_sem, 0, 1);
 
@@ -110,14 +119,27 @@ static bool nus_flag_is_ackable(uint8_t flag)
 static uint8_t data_received(struct bt_nus_client *nus,
 			     const uint8_t *data, uint16_t len)
 {
-	ARG_UNUSED(nus);
-
 	rx_idle_timeout_restart();
+
+	if (nus->conn != tagged_conn) {
+		/* Notification for a connection we no longer believe is the
+		 * tracked beacon (e.g. it was still in flight when the next
+		 * beacon connected). Drop it rather than tagging it with the
+		 * wrong beacon's ID - silently missing data is the existing,
+		 * acknowledged failure mode under link overrun (see the ACL
+		 * RX buffer comment in prj.conf); mislabeling it under a
+		 * different beacon is strictly worse, since it corrupts that
+		 * other beacon's contact history instead.
+		 */
+		LOG_WRN("Dropping NUS notification for a stale/untracked connection "
+			"(conn=%p tagged_conn=%p)", (void *)nus->conn, (void *)tagged_conn);
+		return BT_GATT_ITER_CONTINUE;
+	}
 
 #if defined(DSA_OUTPUT_FORMAT_RAW)
 	uint8_t raw_data[NUS_RAW_PREFIX_LEN + CONFIG_BT_L2CAP_TX_MTU +
 			 NUS_RAW_SUFFIX_LEN] = {
-		'I', 'D', current_beacon_id
+		'I', 'D', tagged_beacon_id
 	};
 	size_t raw_len = MIN((size_t)len, CONFIG_BT_L2CAP_TX_MTU);
 	size_t raw_total_len = NUS_RAW_PREFIX_LEN + raw_len + NUS_RAW_SUFFIX_LEN;
@@ -134,7 +156,7 @@ static uint8_t data_received(struct bt_nus_client *nus,
 		(void)send_ack(data[0], data[1]);
 	}
 #else
-	message_parser_feed(current_beacon_id, data, len);
+	message_parser_feed(tagged_beacon_id, data, len);
 #endif
 	return BT_GATT_ITER_CONTINUE;
 }
@@ -251,7 +273,8 @@ void nus_on_connected(struct bt_conn *conn, uint8_t beacon_id, uint8_t status)
 {
 	int err;
 
-	current_beacon_id = beacon_id;
+	tagged_conn = conn;
+	tagged_beacon_id = beacon_id;
 	message_parser_reset();
 	rx_idle_timeout_restart();
 
@@ -266,6 +289,12 @@ void nus_on_connected(struct bt_conn *conn, uint8_t beacon_id, uint8_t status)
 
 void nus_on_disconnected(void)
 {
+	/* Stop tagging: any notification that still arrives in the gap
+	 * before the next beacon's own nus_on_connected() belongs to no
+	 * currently-tracked connection and must be dropped, not attributed
+	 * to whichever beacon we were last talking to.
+	 */
+	tagged_conn = NULL;
 	rx_idle_timeout_stop();
 	message_parser_reset();
 }

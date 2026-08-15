@@ -106,6 +106,11 @@ static void output_item_submit(struct output_item *item)
 	}
 }
 
+bool output_queue_is_drained(void)
+{
+	return k_msgq_num_used_get(&output_queue) == 0;
+}
+
 void output_data(const uint8_t *data, size_t len)
 {
 	struct output_item item = {
