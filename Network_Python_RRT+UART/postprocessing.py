@@ -18,7 +18,7 @@ DEFAULT_CONTACTS_CSV = "contacts.csv"
 DEFAULT_SELF_REPORTS_CSV = "self_reports.csv"
 DEFAULT_ECO_SESSIONS_CSV = "eco_sessions.csv"
 DEFAULT_CURRENT_ISSUES_CSV = "current_issues.csv"
-DEFAULT_STALE_HOURS = 24
+DEFAULT_STALE_HOURS = 36
 DEFAULT_LOW_BATTERY_MV = 2650
 
 # Sanity bounds for this deployment. A beacon occasionally dumps a handful of
@@ -68,6 +68,7 @@ class LogLine:
     timestamp: datetime
     beacon_id: str
     rest: str
+    source: Path
 
 
 @dataclass
@@ -85,7 +86,7 @@ def id_sort_key(beacon_id: str):
         return (1, beacon_id)
 
 
-def parse_line(raw_line: str) -> Optional[LogLine]:
+def parse_line(raw_line: str, source: Path) -> Optional[LogLine]:
     parts = raw_line.rstrip("\r\n").split(",", 2)
     if len(parts) < 3:
         return None
@@ -100,7 +101,7 @@ def parse_line(raw_line: str) -> Optional[LogLine]:
     if not id_match:
         return None
 
-    return LogLine(timestamp, id_match.group(1), rest.strip())
+    return LogLine(timestamp, id_match.group(1), rest.strip(), source)
 
 
 def read_log_lines(log_paths: list[Path]) -> list[LogLine]:
@@ -108,7 +109,7 @@ def read_log_lines(log_paths: list[Path]) -> list[LogLine]:
     for path in log_paths:
         with path.open(encoding="utf-8", errors="replace") as log_file:
             for raw_line in log_file:
-                parsed = parse_line(raw_line)
+                parsed = parse_line(raw_line, path)
                 if parsed is not None:
                     lines.append(parsed)
 
@@ -186,6 +187,7 @@ def aggregate_into(
     eco_sessions: list[tuple[str, datetime, datetime]],
     valid_date_start: date = DEFAULT_VALID_DATE_START,
     valid_date_end: date = DEFAULT_VALID_DATE_END,
+    skipped_by_source: Optional[dict[Path, int]] = None,
 ) -> tuple[int, int, int, int]:
     """Fold lines into the given (possibly already populated) aggregation state.
 
@@ -195,16 +197,22 @@ def aggregate_into(
     skipped for lack of a preceding Current Timer reference, plus the number
     of entries dropped as corrupted: an out-of-roster beacon ID, an
     out-of-range RSSI, or a timer-resolved timestamp outside
-    [valid_date_start, valid_date_end].
+    [valid_date_start, valid_date_end]. If skipped_by_source is given, it is
+    incremented per line.source for every entry skipped for any reason.
     """
     skipped_contacts = 0
     skipped_self_reports = 0
     skipped_eco_sessions = 0
     skipped_invalid = 0
 
+    def note_skip(source: Path) -> None:
+        if skipped_by_source is not None:
+            skipped_by_source[source] = skipped_by_source.get(source, 0) + 1
+
     for line in lines:
         if not is_valid_beacon_id(line.beacon_id):
             skipped_invalid += 1
+            note_skip(line.source)
             continue
 
         summary = summaries.setdefault(line.beacon_id, BeaconSummary(line.beacon_id))
@@ -231,11 +239,13 @@ def aggregate_into(
             rssi = int(rssi_str)
             if not is_valid_beacon_id(other_id) or not is_valid_rssi(rssi):
                 skipped_invalid += 1
+                note_skip(line.source)
                 continue
 
             ref = current_timer_ref.get(line.beacon_id)
             if ref is None:
                 skipped_contacts += 1
+                note_skip(line.source)
                 continue
 
             reference_timer, reference_timestamp = ref
@@ -244,6 +254,7 @@ def aggregate_into(
                 contact_timestamp, reference_timestamp, valid_date_start, valid_date_end
             ):
                 skipped_invalid += 1
+                note_skip(line.source)
                 continue
 
             id1, id2 = sorted((line.beacon_id, other_id), key=id_sort_key)
@@ -255,6 +266,7 @@ def aggregate_into(
             ref = current_timer_ref.get(line.beacon_id)
             if ref is None:
                 skipped_self_reports += 1
+                note_skip(line.source)
                 continue
 
             reference_timer, reference_timestamp = ref
@@ -263,6 +275,7 @@ def aggregate_into(
                 report_timestamp, reference_timestamp, valid_date_start, valid_date_end
             ):
                 skipped_invalid += 1
+                note_skip(line.source)
                 continue
 
             self_reports.append((line.beacon_id, report_timestamp))
@@ -273,6 +286,7 @@ def aggregate_into(
             ref = current_timer_ref.get(line.beacon_id)
             if ref is None:
                 skipped_eco_sessions += 1
+                note_skip(line.source)
                 continue
 
             reference_timer, reference_timestamp = ref
@@ -286,6 +300,7 @@ def aggregate_into(
                 )
             ):
                 skipped_invalid += 1
+                note_skip(line.source)
                 continue
 
             eco_sessions.append((line.beacon_id, enter_timestamp, exit_timestamp))
@@ -361,7 +376,7 @@ class IncrementalPostProcessor:
             raw_lines, new_offset = _read_new_lines(path, offset)
             self._offsets[path] = new_offset
             for raw_line in raw_lines:
-                parsed = parse_line(raw_line)
+                parsed = parse_line(raw_line, path)
                 if parsed is not None:
                     new_lines.append(parsed)
 
@@ -695,10 +710,11 @@ def main(argv: list[str]) -> int:
     eco_sessions = read_eco_sessions_csv(args.eco_sessions_csv)
     current_timer_ref: dict[str, tuple[int, datetime]] = {}
     contacts: list[tuple[str, str, int, datetime]] = []
+    skipped_by_source: dict[Path, int] = {}
 
     skipped_contacts, skipped_self_reports, skipped_eco_sessions, skipped_invalid = aggregate_into(
         lines, summaries, current_timer_ref, contacts, self_reports, eco_sessions,
-        args.valid_date_start, args.valid_date_end,
+        args.valid_date_start, args.valid_date_end, skipped_by_source,
     )
 
     # Guard against duplicate rows if a log file gets reprocessed before it's
@@ -753,6 +769,11 @@ def main(argv: list[str]) -> int:
             f"RSSI outside {DEFAULT_VALID_RSSI_MIN} to {DEFAULT_VALID_RSSI_MAX}, "
             f"or a resolved timestamp outside {args.valid_date_start} to {args.valid_date_end}."
         )
+    total_skipped = skipped_contacts + skipped_self_reports + skipped_eco_sessions + skipped_invalid
+    if total_skipped:
+        print("Skipped entries by log file:")
+        for path in log_paths:
+            print(f"  {path.name}: {skipped_by_source.get(path, 0)}")
 
     return 0
 

@@ -276,6 +276,16 @@ class MessageParser:
 
         contact_count = self._buffer[frame_header_size]
         payload_len = contact_count_size + (contact_count * DSA_DATA_SET_LEN)
+        flag_size = 1
+        if flag_size + payload_len > MAX_NUS_RAW_PAYLOAD_LEN:
+            # Implausible contact count for a single NUS notification - most
+            # likely a UART framing desync (this byte isn't really a count).
+            # Resync now instead of waiting for a frame size that can never
+            # complete and later mis-slicing subsequent real messages into
+            # fake contact records.
+            self._discard_invalid_frame()
+            return ParsedMessage(beacon_id, DSA_NUS_FLAG_DATA, DSA_NUS_FLAGS[DSA_NUS_FLAG_DATA], b"", ()), False
+
         frame_size = frame_header_size + payload_len
         total_size = frame_size + len(MESSAGE_TERMINATOR)
         if len(self._buffer) < total_size:
