@@ -51,7 +51,7 @@ SANITY_CHECK_NAMES = (
 # out-of-range timer (resolving to a timestamp months away) and/or an ID
 # that isn't part of the fielded roster. See contacts_20261008.csv, traced
 # to a beacon 44<->71 record with Timer: 4801652 that resolved to 2026-10-08.
-DEFAULT_VALID_ID_MIN = 1
+DEFAULT_VALID_ID_MIN = 0
 DEFAULT_VALID_ID_MAX = 170
 DEFAULT_VALID_EXTRA_IDS = frozenset({252, 253, 254})
 DEFAULT_VALID_DATE_START = date(2026, 8, 12)

@@ -420,8 +420,6 @@ class LogOutput:
 
 
 def format_beacon_id(beacon_id_byte: int) -> str:
-    if ord("0") <= beacon_id_byte <= ord("9"):
-        return chr(beacon_id_byte)
     return str(beacon_id_byte)
 
 
