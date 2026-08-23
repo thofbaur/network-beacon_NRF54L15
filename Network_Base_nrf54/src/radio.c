@@ -33,9 +33,8 @@ static const char * const dsa_allowed_adv_names[] = {
 	"DSL",
 };
 
-/* Build-time allow-list of beacon ids. Leave empty to accept any id. */
-static const uint8_t dsa_allowed_adv_ids[] = {
-};
+/* CONFIG_DSA_TARGET_BEACON_ID == DSA_TARGET_BEACON_ID_ANY accepts any id. */
+#define DSA_TARGET_BEACON_ID_ANY 0xFF
 
 struct dsa_adv {
 	bool name_match;
@@ -205,17 +204,11 @@ static bool adv_name_allowed(const uint8_t *data, uint8_t len)
 
 static bool adv_id_allowed(uint8_t id)
 {
-	if (ARRAY_SIZE(dsa_allowed_adv_ids) == 0) {
+	if (CONFIG_DSA_TARGET_BEACON_ID == DSA_TARGET_BEACON_ID_ANY) {
 		return true;
 	}
 
-	for (size_t i = 0; i < ARRAY_SIZE(dsa_allowed_adv_ids); i++) {
-		if (dsa_allowed_adv_ids[i] == id) {
-			return true;
-		}
-	}
-
-	return false;
+	return id == CONFIG_DSA_TARGET_BEACON_ID;
 }
 
 static bool parse_advertising_data(struct bt_data *data, void *user_data)

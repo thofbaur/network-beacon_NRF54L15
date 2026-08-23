@@ -21,6 +21,15 @@ config DSA_READOUT_LEVEL
 	  Minimum decoded network data level required before connecting to a
 	  matching DSA beacon.
 
+config DSA_TARGET_BEACON_ID
+	int "DSA target beacon id"
+	range 0 255
+	default 255
+	help
+	  Beacon id to exclusively connect to. 255 (0xFF) means accept any
+	  beacon id that satisfies the other connect criteria (name,
+	  manufacturer data, readout level).
+
 choice DSA_OUTPUT_FORMAT
 	prompt "DSA output data format"
 	default DSA_OUTPUT_FORMAT_PARSED
