@@ -37,6 +37,15 @@ MAX_NUS_RAW_PAYLOAD_LEN = 247
 NETWORK_BASE_SUBSTRING = "network_base:"
 DEFAULT_OMIT_NETWORK_BASE_LINES = True
 DEFAULT_OMIT_TIMESTAMPED_LINES = True
+# Full incremental post-processing after every finished transfer is off by
+# default: on a directory that already holds logs, each pass re-reads the whole
+# history and rewrites every CSV, which stalls the capture loop badly enough to
+# lose live data. Opt back in with --post-processing.
+DEFAULT_RUN_POST_PROCESSING = False
+# Cheap alternative kept on by default: after a finished transfer, refresh only
+# the just-connected beacon's rows in current_issues.csv from what this session
+# saw live, touching nothing else.
+DEFAULT_UPDATE_CURRENT_ISSUES = True
 TIMESTAMPED_LINE_PATTERN = re.compile(r"\[\d{2}:\d{2}:\d{2}\.\d{3},\d{3}\]")
 MESSAGE_PREFIX = b"ID"
 MESSAGE_TERMINATOR = b"\r\n"
@@ -419,6 +428,51 @@ class LogOutput:
             self._file = None
 
 
+class CurrentIssuesUpdater:
+    """Keeps current_issues.csv current for the beacon of each finished transfer.
+
+    A lightweight stand-in for the full IncrementalPostProcessor: it never reads
+    the log history, only folds in what this capture session has seen live
+    (last-seen time, last reported voltage, last fault/status byte), per beacon.
+    On each finished transfer it rewrites just that beacon's rows in the findings
+    file via postprocessing.update_current_issues_for_beacon and leaves every
+    other beacon's rows untouched.
+    """
+
+    def __init__(self, current_issues_csv: Path) -> None:
+        self.current_issues_csv = current_issues_csv
+        self._summaries: dict[str, postprocessing.BeaconSummary] = {}
+
+    def observe(self, message: ParsedMessage, seen_at: datetime) -> None:
+        if not postprocessing.is_valid_beacon_id(message.beacon_id):
+            return
+
+        summary = self._summaries.setdefault(
+            message.beacon_id, postprocessing.BeaconSummary(message.beacon_id)
+        )
+        summary.last_seen = seen_at
+        for line in message.output_lines:
+            voltage_match = postprocessing.VOLTAGE_RE.match(line)
+            if voltage_match:
+                summary.last_voltage_mv = int(voltage_match.group(1))
+                continue
+            status_match = postprocessing.STATUS_RE.match(line)
+            if status_match:
+                summary.last_status_byte = int(status_match.group(1))
+
+    def update_finished_beacon(self, beacon_id: str, finished_at: datetime) -> None:
+        summary = self._summaries.get(beacon_id)
+        if summary is None:
+            return
+
+        try:
+            postprocessing.update_current_issues_for_beacon(
+                self.current_issues_csv, beacon_id, summary, finished_at
+            )
+        except OSError as exc:
+            print(f"Current-issues update failed for ID {beacon_id}: {exc}", file=sys.stderr)
+
+
 def format_beacon_id(beacon_id_byte: int) -> str:
     return str(beacon_id_byte)
 
@@ -535,6 +589,7 @@ def run_logger(
     parser: MessageParser,
     output: LogOutput,
     post_processor: Optional[postprocessing.IncrementalPostProcessor] = None,
+    issues_updater: Optional[CurrentIssuesUpdater] = None,
 ) -> None:
     input_source.open()
     output.open()
@@ -548,13 +603,18 @@ def run_logger(
                 continue
 
             for message in parser.feed(data):
+                received_at = datetime.now()
                 output.write_message(message)
+                if issues_updater is not None:
+                    issues_updater.observe(message, received_at)
                 if (
-                    post_processor is not None
-                    and message.flag_value == DSA_NUS_FLAG_CONTROL
+                    message.flag_value == DSA_NUS_FLAG_CONTROL
                     and message.payload == DSA_CONTROL_FINISHED_PAYLOAD
                 ):
-                    run_post_processing(post_processor, message.beacon_id)
+                    if issues_updater is not None:
+                        issues_updater.update_finished_beacon(message.beacon_id, received_at)
+                    if post_processor is not None:
+                        run_post_processing(post_processor, message.beacon_id)
     except KeyboardInterrupt:
         trailing_message = parser.flush()
         if trailing_message is not None:
@@ -608,6 +668,27 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=DEFAULT_OMIT_TIMESTAMPED_LINES,
         help="Omit lines containing timestamps like [00:03:24.911,418]. Default: enabled",
     )
+    parser.add_argument(
+        "--post-processing",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_RUN_POST_PROCESSING,
+        help=(
+            "Run the full incremental post-processing after every finished transfer, "
+            "rebuilding all summary/contacts/self-report/eco/issues CSVs. Off by "
+            "default: on a directory with existing logs each pass re-reads the whole "
+            "history and stalls the capture. Default: disabled"
+        ),
+    )
+    parser.add_argument(
+        "--current-issues",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_UPDATE_CURRENT_ISSUES,
+        help=(
+            "After each finished transfer, refresh only the just-connected beacon's "
+            "rows in current_issues.csv from what this session saw live. Ignored when "
+            "--post-processing is set (that rebuilds the file itself). Default: enabled"
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -621,17 +702,27 @@ def main(argv: list[str]) -> int:
         args.omit_timestamped_lines,
     )
     output = LogOutput(Path.cwd())
-    post_processor = postprocessing.IncrementalPostProcessor(
-        output.directory,
-        output.directory / postprocessing.DEFAULT_SUMMARY_CSV,
-        output.directory / postprocessing.DEFAULT_CONTACTS_CSV,
-        output.directory / postprocessing.DEFAULT_SELF_REPORTS_CSV,
-        output.directory / postprocessing.DEFAULT_ECO_SESSIONS_CSV,
-        output.directory / postprocessing.DEFAULT_CURRENT_ISSUES_CSV,
-    )
+
+    post_processor: Optional[postprocessing.IncrementalPostProcessor] = None
+    if args.post_processing:
+        post_processor = postprocessing.IncrementalPostProcessor(
+            output.directory,
+            output.directory / postprocessing.DEFAULT_SUMMARY_CSV,
+            output.directory / postprocessing.DEFAULT_CONTACTS_CSV,
+            output.directory / postprocessing.DEFAULT_SELF_REPORTS_CSV,
+            output.directory / postprocessing.DEFAULT_ECO_SESSIONS_CSV,
+            output.directory / postprocessing.DEFAULT_CURRENT_ISSUES_CSV,
+            measurements_csv=output.directory / postprocessing.DEFAULT_MEASUREMENTS_CSV,
+        )
+
+    issues_updater: Optional[CurrentIssuesUpdater] = None
+    if args.current_issues and post_processor is None:
+        issues_updater = CurrentIssuesUpdater(
+            output.directory / postprocessing.DEFAULT_CURRENT_ISSUES_CSV
+        )
 
     try:
-        run_logger(input_source, message_parser, output, post_processor)
+        run_logger(input_source, message_parser, output, post_processor, issues_updater)
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
