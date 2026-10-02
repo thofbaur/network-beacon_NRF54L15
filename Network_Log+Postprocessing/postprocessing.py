@@ -37,6 +37,15 @@ CHECK_SELF_REPORT_NO_REF = "Self-report missing Current Timer"
 CHECK_SELF_REPORT_TIMESTAMP = "Self-report timestamp implausible"
 CHECK_ECO_SESSION_NO_REF = "Eco-session missing Current Timer"
 CHECK_ECO_SESSION_TIMESTAMP = "Eco-session timestamp implausible"
+# Distinct from the *_TIMESTAMP checks above: those flag a physically
+# impossible timestamp (later than the log line's own capture time - a sign
+# of corruption). These instead flag an otherwise perfectly plausible
+# timestamp that simply falls outside the configured observation window
+# (--valid-date-start/--valid-date-end) - a scoping decision, not a data
+# quality problem, so it must not be counted as "implausible".
+CHECK_CONTACT_OUT_OF_SPAN = "Contact timestamp outside observation window"
+CHECK_SELF_REPORT_OUT_OF_SPAN = "Self-report timestamp outside observation window"
+CHECK_ECO_SESSION_OUT_OF_SPAN = "Eco-session timestamp outside observation window"
 # Unlike the checks above, these don't cause an entry to be skipped during
 # aggregation - they count how often an entry fell back to a following
 # Current Timer reference for lack of a preceding one (see aggregate_into's
@@ -65,14 +74,17 @@ SANITY_CHECK_NAMES = (
     CHECK_CONTACT_FALLBACK_REF,
     CHECK_CONTACT_TIMESTAMP_RECOVERED,
     CHECK_CONTACT_TIMESTAMP,
+    CHECK_CONTACT_OUT_OF_SPAN,
     CHECK_SELF_REPORT_NO_REF,
     CHECK_SELF_REPORT_FALLBACK_REF,
     CHECK_SELF_REPORT_TIMESTAMP_RECOVERED,
     CHECK_SELF_REPORT_TIMESTAMP,
+    CHECK_SELF_REPORT_OUT_OF_SPAN,
     CHECK_ECO_SESSION_NO_REF,
     CHECK_ECO_SESSION_FALLBACK_REF,
     CHECK_ECO_SESSION_TIMESTAMP_RECOVERED,
     CHECK_ECO_SESSION_TIMESTAMP,
+    CHECK_ECO_SESSION_OUT_OF_SPAN,
     CHECK_TRANSFER_MISLABEL,
 )
 
@@ -166,8 +178,10 @@ class ValidTimeSpan:
 
 
 # The evaluation only covers this deployment window; a timer-resolved
-# timestamp outside it is treated as corrupted flash data and dropped (see
-# DEFAULT_VALID_ID_MIN/MAX above for the same reasoning applied to IDs).
+# timestamp outside it is dropped as out-of-scope - unlike DEFAULT_VALID_ID_MIN/MAX
+# and DEFAULT_VALID_RSSI_MIN/MAX below, this is a scoping decision, not a sign
+# of corruption, so it's tracked separately (CHECK_*_OUT_OF_SPAN) rather than
+# folded into the "implausible"/corrupted-data checks.
 DEFAULT_VALID_SPAN = ValidTimeSpan(datetime(2026, 8, 12, 0, 0, 0), datetime(2026, 8, 29, 9, 0, 0))
 
 
@@ -344,10 +358,13 @@ def is_within_valid_span(timestamp: datetime, valid_span: ValidTimeSpan) -> bool
 def is_plausible_event_timestamp(
     timestamp: datetime,
     message_timestamp: datetime,
-    valid_span: ValidTimeSpan,
     tolerance_seconds: int = DEFAULT_TIMESTAMP_TOLERANCE_SECONDS,
 ) -> bool:
-    """Whether a timer-resolved past event's timestamp is plausible.
+    """Whether a timer-resolved past event's timestamp is physically
+    possible - a corruption check, independent of the configured observation
+    window (see is_within_valid_span for that separate, non-corruption
+    scoping check, which callers must apply on their own rather than fold in
+    here).
 
     A contact/self-report/eco-session is resolved relative to a "Current
     Timer" reference, but that reference may now be a later one than the
@@ -360,20 +377,15 @@ def is_plausible_event_timestamp(
     a beacon reporting a backlog of contacts recorded just before its own
     clock reset routinely overshoots the fresh "Current Timer" reference by a
     few seconds (see aggregate_into's reboot-backlog comment) without that
-    being a sign of corruption. Corrupted timer values that undershoot only
-    slightly can still land inside the valid date span by chance, so both
-    checks are needed.
+    being a sign of corruption.
     """
-    return timestamp <= message_timestamp + timedelta(seconds=tolerance_seconds) and is_within_valid_span(
-        timestamp, valid_span
-    )
+    return timestamp <= message_timestamp + timedelta(seconds=tolerance_seconds)
 
 
 def resolve_event_timestamp(
     timer: int,
     ref: tuple[int, datetime],
     message_timestamp: datetime,
-    valid_span: ValidTimeSpan,
     previous_ref: Optional[tuple[int, datetime]] = None,
     previous_high_water: Optional[int] = None,
     tolerance_seconds: int = DEFAULT_TIMESTAMP_TOLERANCE_SECONDS,
@@ -394,27 +406,24 @@ def resolve_event_timestamp(
 
     Returns (timestamp, plausible, used_previous_ref). When plausible is
     False, timestamp is still the (implausible) value resolved against ref,
-    for the caller to discard.
+    for the caller to discard. Plausibility here is strictly the physical
+    (not-in-the-future) check - whether the resulting timestamp falls inside
+    the configured observation window is a separate check the caller must
+    apply itself (see is_within_valid_span) and must not conflate with this.
     """
     reference_timer, reference_timestamp = ref
     timestamp = _timer_to_timestamp(reference_timer, reference_timestamp, timer)
-    if is_plausible_event_timestamp(
-        timestamp, message_timestamp, valid_span, tolerance_seconds
-    ):
+    if is_plausible_event_timestamp(timestamp, message_timestamp, tolerance_seconds):
         return timestamp, True, False
 
-    in_future = timestamp > message_timestamp + timedelta(seconds=tolerance_seconds)
     if (
-        in_future
-        and previous_ref is not None
+        previous_ref is not None
         and previous_high_water is not None
         and previous_high_water < timer
     ):
         old_reference_timer, old_reference_timestamp = previous_ref
         old_timestamp = _timer_to_timestamp(old_reference_timer, old_reference_timestamp, timer)
-        if is_plausible_event_timestamp(
-            old_timestamp, message_timestamp, valid_span, tolerance_seconds
-        ):
+        if is_plausible_event_timestamp(old_timestamp, message_timestamp, tolerance_seconds):
             return old_timestamp, True, True
 
     return timestamp, False, False
@@ -440,11 +449,15 @@ def aggregate_into(
     Returns the number of contact, self-report, and eco session entries
     skipped for lack of any Current Timer reference (neither a preceding nor
     a following one, within this batch), plus the number of entries dropped
-    as corrupted: an out-of-roster beacon ID, an out-of-range RSSI, or a
-    timer-resolved timestamp outside [valid_span.start, valid_span.end]. If
-    skipped_by_source is given, skipped_by_source[source][check_name] (one of
-    the CHECK_* / SANITY_CHECK_NAMES constants) is incremented for every
-    entry skipped for that reason.
+    for any other reason: an out-of-roster beacon ID, an out-of-range RSSI, a
+    physically implausible (future) timer-resolved timestamp, or a timestamp
+    outside [valid_span.start, valid_span.end] - only the first three of
+    those are actual data-quality problems; the last is just a scoping
+    exclusion and is tracked under its own CHECK_*_OUT_OF_SPAN name rather
+    than the CHECK_*_TIMESTAMP ("implausible") ones. If skipped_by_source is
+    given, skipped_by_source[source][check_name] (one of the CHECK_* /
+    SANITY_CHECK_NAMES constants) is incremented for every entry skipped for
+    that reason.
 
     A beacon's own clock can reset (e.g. reboot) while it still holds a
     backlog of contacts stored under the old tick count, making their timer
@@ -550,7 +563,7 @@ def aggregate_into(
                 note_skip(line.source, CHECK_CONTACT_FALLBACK_REF)
 
             contact_timestamp, plausible, used_previous_ref = resolve_event_timestamp(
-                timer, ref, line.timestamp, valid_span,
+                timer, ref, line.timestamp,
                 previous_timer_ref.get(line.beacon_id), previous_entry_high_water.get(line.beacon_id),
             )
             if not plausible:
@@ -559,6 +572,10 @@ def aggregate_into(
                 continue
             if used_previous_ref:
                 note_skip(line.source, CHECK_CONTACT_TIMESTAMP_RECOVERED)
+            if not is_within_valid_span(contact_timestamp, valid_span):
+                skipped_invalid += 1
+                note_skip(line.source, CHECK_CONTACT_OUT_OF_SPAN)
+                continue
 
             contacts.append((line.beacon_id, other_id, rssi, contact_timestamp))
             continue
@@ -578,7 +595,7 @@ def aggregate_into(
                 note_skip(line.source, CHECK_SELF_REPORT_FALLBACK_REF)
 
             report_timestamp, plausible, used_previous_ref = resolve_event_timestamp(
-                timer, ref, line.timestamp, valid_span,
+                timer, ref, line.timestamp,
                 previous_timer_ref.get(line.beacon_id), previous_entry_high_water.get(line.beacon_id),
             )
             if not plausible:
@@ -587,6 +604,10 @@ def aggregate_into(
                 continue
             if used_previous_ref:
                 note_skip(line.source, CHECK_SELF_REPORT_TIMESTAMP_RECOVERED)
+            if not is_within_valid_span(report_timestamp, valid_span):
+                skipped_invalid += 1
+                note_skip(line.source, CHECK_SELF_REPORT_OUT_OF_SPAN)
+                continue
 
             self_reports.append((line.beacon_id, report_timestamp))
             continue
@@ -609,10 +630,10 @@ def aggregate_into(
             prev_ref = previous_timer_ref.get(line.beacon_id)
             prev_high_water = previous_entry_high_water.get(line.beacon_id)
             enter_timestamp, enter_plausible, enter_used_previous = resolve_event_timestamp(
-                enter_timer, ref, line.timestamp, valid_span, prev_ref, prev_high_water,
+                enter_timer, ref, line.timestamp, prev_ref, prev_high_water,
             )
             exit_timestamp, exit_plausible, exit_used_previous = resolve_event_timestamp(
-                exit_timer, ref, line.timestamp, valid_span, prev_ref, prev_high_water,
+                exit_timer, ref, line.timestamp, prev_ref, prev_high_water,
             )
             if not (enter_plausible and exit_plausible):
                 skipped_invalid += 1
@@ -620,6 +641,13 @@ def aggregate_into(
                 continue
             if enter_used_previous or exit_used_previous:
                 note_skip(line.source, CHECK_ECO_SESSION_TIMESTAMP_RECOVERED)
+            if not (
+                is_within_valid_span(enter_timestamp, valid_span)
+                and is_within_valid_span(exit_timestamp, valid_span)
+            ):
+                skipped_invalid += 1
+                note_skip(line.source, CHECK_ECO_SESSION_OUT_OF_SPAN)
+                continue
 
             eco_sessions.append((line.beacon_id, enter_timestamp, exit_timestamp))
             continue
@@ -1303,10 +1331,13 @@ def main(argv: list[str]) -> int:
         )
     if skipped_invalid:
         print(
-            f"Skipped {skipped_invalid} entries as corrupted flash data: beacon ID outside "
+            f"Skipped {skipped_invalid} entries: as corrupted flash data, a beacon ID outside "
             f"{DEFAULT_VALID_ID_MIN}-{DEFAULT_VALID_ID_MAX} or {sorted(DEFAULT_VALID_EXTRA_IDS)}, "
-            f"RSSI outside {DEFAULT_VALID_RSSI_MIN} to {DEFAULT_VALID_RSSI_MAX}, "
-            f"or a resolved timestamp outside {args.valid_span.start} to {args.valid_span.end}."
+            f"an RSSI outside {DEFAULT_VALID_RSSI_MIN} to {DEFAULT_VALID_RSSI_MAX}, or a physically "
+            "implausible (future) resolved timestamp; or, not as corrupted data but simply out of "
+            f"scope, a resolved timestamp outside the configured observation window "
+            f"{args.valid_span.start} to {args.valid_span.end} (see the CHECK_*_OUT_OF_SPAN columns "
+            "in sanity_findings.csv for the breakdown)."
         )
     total_skipped = skipped_contacts + skipped_self_reports + skipped_eco_sessions + skipped_invalid
     if total_skipped:
