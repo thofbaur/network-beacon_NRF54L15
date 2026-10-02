@@ -1,0 +1,68 @@
+ID,Raumnummer,Label
+114,0.6,Kurs AKL 0.6
+115,0.8,Kurs AKL 0.8
+116,0.9,0.9
+117,0.11,Kleiner Musikraum
+118,0.12,Großer Musikraum
+119,1.4,Kurs 1.5
+120,1.6,Kursraum
+121,1.7,Kurs 1.1 Neben
+122,1.8,Kurs 1.1 Haupt
+123,1.9,Kurs
+124,2.4,Kurs 1.4
+125,2.4,großer Kunstraum
+126,2.5,kleiner Kunstraum
+127,2.6,Kurs 1.2
+128,2.8,Kursraum
+129,2.9,Kurs 1.3
+130,D.3,kleiner Musikraum
+131,D.4,kleiner Musikraum
+132,D.5,kleiner Musikraum
+133,D.6,kleiner Musikraum
+134,AULA,Plenum
+135,AULA,Plenum
+136,AULA,Plenum
+137,AULA,Plenum
+138,AULA,Plenum
+139,AULA,Plenum
+140,MENSA_AULA,Zwischen Mensa und Aula
+141,MENSA_AULA,Zwischen Mensa und Aula
+142,MENSA_AULA,Zwischen Mensa und Aula
+143,MENSA,Mensa
+144,MENSA,Mensa
+145,MENSA,Mensa
+146,MENSA,Mensa
+147,MENSA,Mensa
+148,MENSA,Mensa
+149,HK1_OG_AULA,Aufenthalt1
+150,HK2_OG_AULA,Aufenthalt2
+151,HK3_OG_AULA,Aufenthalt3
+152,HK4_OG_AULA,Aufenthalt4
+153,HK5_OG_AULA,Aufenthalt5
+154,HK6_OG_AULA,Musikhalbkreis
+155,Physikraum,Kurs 1.2
+156,CASINO,Casino
+157,CASINO,Casino
+158,CASINO,Casino
+159,CASINO,Casino
+160,CHILL,Chill
+161,CHILL,Chill
+162,CHILL,Chill
+163,CHILL,Chill
+164,CHILL_sub,Chill_sub
+165,CHILL_sub,Chill_sub
+166,FUN,Fun
+167,FUN,Fun
+168,FUN,Fun
+169,FUN,Fun
+170,FUN_sub,Fun_sub1
+1,FUN_sub,Fun_sub2
+12,FUN_sub,Fun_sub3
+18,FUN_sub,Fun_sub4
+30,DYNAMIC,Dynamic1
+63,DYNAMIC,Dynamic2
+67,DYNAMIC,Dynamic3
+86,DYNAMIC,Dynamic4
+87,DYNAMIC,Dynamic5
+93,DYNAMIC,Dynamic6
+94,DYNAMIC,Dynamic7

@@ -45,7 +45,7 @@ import numpy as np
 import pandas as pd
 
 EVALUATION_DIR = Path(__file__).resolve().parent.parent  # this module lives in Evaluation/script/
-DEFAULT_CONTACTS_DIR = EVALUATION_DIR.parent / "Network_Python_RRT+UART" / "Output"
+DEFAULT_CONTACTS_DIR = EVALUATION_DIR.parent / "Network_Log+Postprocessing" / "Output"
 DEFAULT_ROOMS_CSV = EVALUATION_DIR / "list_rooms.csv"
 DEFAULT_PERSONS_CSV = EVALUATION_DIR / "list_persons.csv"
 DEFAULT_SELF_REPORTS_CSV = DEFAULT_CONTACTS_DIR / "self_reports.csv"

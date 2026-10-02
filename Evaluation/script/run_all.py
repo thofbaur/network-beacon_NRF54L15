@@ -37,6 +37,7 @@ import evaluation_battery
 import evaluation_heatmap_zeit_tag
 import evaluation_heatmaps
 import evaluation_occupancy
+import evaluation_resets
 import evaluation_selfreport
 import evaluation_selfreport_gaps
 import visualize_contact_graph
@@ -48,6 +49,7 @@ NO_ROOMS_VIDEO = str(build_contact_graph.DEFAULT_RESULT_DIR / "graph_ohne_raeume
 # (name, module, human label, is a slow video render, argv to call module.main() with)
 STEPS = [
     ("battery", evaluation_battery, "Batteriespannung über die Zeit", False, []),
+    ("resets", evaluation_resets, "Beacon-Resets", False, []),
     ("heatmaps", evaluation_heatmaps, "Personen-/Raum-/Zeit-Heatmaps", False, []),
     ("heatmap-zeit-tag", evaluation_heatmap_zeit_tag, "Kontaktzeit je Tag", False, []),
     ("selfreport", evaluation_selfreport, "Self-Report-Heatmap", False, []),

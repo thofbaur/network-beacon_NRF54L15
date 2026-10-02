@@ -38,14 +38,17 @@ from evaluation_preparation import (  # noqa: E402
 
 DEFAULT_MEASUREMENTS_CSV = DEFAULT_CONTACTS_DIR / "measurements.csv"
 DEFAULT_OUTPUT_PNG = DEFAULT_RESULT_DIR / "Batteriespannung_Verlauf.png"
+DEFAULT_HISTOGRAM_PNG = DEFAULT_RESULT_DIR / "Beacon_Resets_Histogramm.png"
 
 LOW_BATTERY_MV = 2650  # kept in sync with postprocessing.py's DEFAULT_LOW_BATTERY_MV
+DEFAULT_RESET_TOLERANCE_MIN = 10  # kept in sync with evaluation_resets.py's DEFAULT_TOLERANCE_MIN
 
 SURFACE = "#fcfcfb"
 INK_PRIMARY = "#0b0b0b"
 INK_SECONDARY = "#52514e"
 GRIDLINE = "#e1e0d9"
 LOW_BATTERY_COLOR = "#e34948"
+BAR_COLOR = "#3987e5"
 
 
 def load_measurements(path: Path) -> pd.DataFrame:
@@ -62,6 +65,46 @@ def load_measurements(path: Path) -> pd.DataFrame:
     df = df.dropna(subset=["Battery (mV)"])
     df = df[~df["ID"].isin(SPECIAL_IDS)]
     return df.sort_values(["ID", "Timestamp"]).reset_index(drop=True)
+
+
+def load_zero_times(path: Path) -> pd.DataFrame:
+    """Load ID / Timestamp / Calculated time for 0 timer from measurements.csv, cleaned and sorted.
+
+    Kept separate from load_measurements: a "Current Timer" readout can be
+    missing its Voltage line (see postprocessing.py's collect_measurements)
+    while still carrying a valid Timer, so reset detection must not skip rows
+    that load_measurements drops for lacking a voltage reading - that would
+    create gaps in a beacon's timeline and produce false or missed resets.
+    """
+    df = pd.read_csv(path, usecols=["ID", "Timestamp", "Calculated time for 0 timer"])
+    df["ID"] = df["ID"].astype("int64")
+    df["Timestamp"] = pd.to_datetime(df["Timestamp"])
+    df["Zero Time"] = pd.to_datetime(df["Calculated time for 0 timer"], errors="coerce")
+    df = df.dropna(subset=["Zero Time"])
+    df = df[~df["ID"].isin(SPECIAL_IDS)]
+    return df.sort_values(["ID", "Timestamp"]).reset_index(drop=True)
+
+
+def count_resets_per_beacon(df: pd.DataFrame, tolerance_min: float) -> pd.DataFrame:
+    """Number of clock resets per beacon: how often its Timer counter restarted.
+
+    A beacon's calculated Timer-zero time is stable between resets (see the
+    project's ID-mapping notes) - only small readout-to-readout jitter. A
+    reboot restarts the Timer counter, so the zero time no longer matches the
+    previous stretch; this shows up as it dropping by more than
+    tolerance_min versus that beacon's immediately preceding readout (see
+    evaluation_resets.py, which this mirrors). df must already be sorted by
+    (ID, Timestamp) (see load_zero_times). Returns ID, Resets - every beacon
+    in df, including those with 0.
+    """
+    tolerance = pd.Timedelta(minutes=tolerance_min)
+    previous_zero = df.groupby("ID")["Zero Time"].shift(1)
+    is_reset = previous_zero.notna() & (df["Zero Time"] < previous_zero - tolerance)
+
+    all_ids = sorted(df["ID"].unique())
+    counts = df.loc[is_reset, "ID"].value_counts().reindex(all_ids, fill_value=0)
+    counts.index.name = "ID"
+    return counts.reset_index(name="Resets")
 
 
 def plot_battery_over_time(df: pd.DataFrame, output_path: Path, annotate_ids: bool) -> None:
@@ -129,6 +172,45 @@ def plot_battery_over_time(df: pd.DataFrame, output_path: Path, annotate_ids: bo
     plt.close(fig)
 
 
+def plot_reset_histogram(counts: pd.DataFrame, output_path: Path) -> None:
+    """Bar chart of the number of clock resets (Timer restarts) per beacon ID.
+
+    counts is the output of count_resets_per_beacon: one bar per beacon,
+    including beacons that never reset (bar height 0).
+    """
+    counts = counts.sort_values("ID")
+
+    fig, ax = plt.subplots(figsize=(max(10, len(counts) * 0.22), 6), dpi=150, facecolor=SURFACE)
+    ax.set_facecolor(SURFACE)
+
+    positions = range(len(counts))
+    ax.bar(positions, counts["Resets"], color=BAR_COLOR, width=0.7)
+
+    ax.set_xticks(list(positions))
+    ax.set_xticklabels(counts["ID"].astype(str), fontsize=7, color=INK_SECONDARY, rotation=90)
+    ax.yaxis.get_major_locator().set_params(integer=True)
+    ax.tick_params(length=0, colors=INK_SECONDARY, labelsize=8.5)
+    for spine in ax.spines.values():
+        spine.set_color(GRIDLINE)
+    ax.grid(axis="y", color=GRIDLINE, linewidth=0.7)
+    ax.set_axisbelow(True)
+
+    ax.set_xlabel("Beacon-ID", color=INK_SECONDARY, fontsize=9.5)
+    ax.set_ylabel("Anzahl Resets", color=INK_SECONDARY, fontsize=9.5)
+    total_resets = int(counts["Resets"].sum())
+    reset_beacons = int((counts["Resets"] > 0).sum())
+    ax.set_title(
+        f"Beacon-Resets ({total_resets} Reset(s) auf {reset_beacons} von {len(counts)} Beacons)",
+        color=INK_PRIMARY,
+        fontsize=11,
+        pad=12,
+    )
+
+    fig.tight_layout()
+    fig.savefig(output_path, facecolor=SURFACE)
+    plt.close(fig)
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Plot every beacon's battery voltage over time from measurements.csv."
@@ -156,12 +238,28 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="Label each line with its beacon ID at its last point (dense with the full fleet, off by default).",
     )
+    parser.add_argument(
+        "--histogram-output",
+        type=Path,
+        default=DEFAULT_HISTOGRAM_PNG,
+        help=f"Output PNG path for the per-ID reset-count histogram. Default: {DEFAULT_HISTOGRAM_PNG}",
+    )
+    parser.add_argument(
+        "--reset-tolerance-min",
+        type=float,
+        default=DEFAULT_RESET_TOLERANCE_MIN,
+        help=(
+            "A zero-time drop of at most this many minutes vs. the beacon's previous readout "
+            f"is treated as clock jitter, not a reset. Default: {DEFAULT_RESET_TOLERANCE_MIN}"
+        ),
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.histogram_output.parent.mkdir(parents=True, exist_ok=True)
 
     if not args.measurements_csv.exists():
         print(f"Measurements CSV not found: {args.measurements_csv}", file=sys.stderr)
@@ -184,6 +282,19 @@ def main(argv: list[str]) -> int:
 
     plot_battery_over_time(df, args.output, args.annotate_ids)
     print(f"Wrote battery voltage plot to {args.output}")
+
+    zero_times = load_zero_times(args.measurements_csv)
+    if args.start_time is not None:
+        zero_times = zero_times[zero_times["Timestamp"] >= args.start_time]
+    if not zero_times.empty:
+        reset_counts = count_resets_per_beacon(zero_times, args.reset_tolerance_min)
+        print(
+            f"{int(reset_counts['Resets'].sum())} reset(s) detected across "
+            f"{int((reset_counts['Resets'] > 0).sum())} of {len(reset_counts)} beacon(s)."
+        )
+        plot_reset_histogram(reset_counts, args.histogram_output)
+        print(f"Wrote per-ID reset-count histogram to {args.histogram_output}")
+
     return 0
 
 
