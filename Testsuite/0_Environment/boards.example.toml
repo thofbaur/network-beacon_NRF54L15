@@ -1,0 +1,25 @@
+# Copy to boards.toml (same folder, git-ignored) and fill in your boards.
+# J-Link serial numbers: `nrfutil device list` or the label on the DK.
+# VCOM ports: Device Manager (Windows), /dev/tty.usbmodem* (macOS),
+# /dev/ttyACM* (Linux). Use the first VCOM of the DK (application UART).
+
+[dk_a]
+# Device under test: always runs the beacon firmware.
+jlink_serial = 1057714900
+# Its beacon ID from radio_ids.c (development kits are 252-254).
+beacon_id = 254
+
+[dk_b]
+# Partner board: reprogrammed by the tests as Base, Commander (Control),
+# Beacon, or Scan_New_Tags.
+jlink_serial = 1057727131
+vcom = "COM11"
+beacon_id = 253
+
+[tags]
+# Battery-powered tags with a dsa_dev + hil build, used by H9.
+beacon_ids = []
+
+[ble]
+# Optional: Bluetooth adapter name/address for bleak (default adapter if empty).
+adapter = ""

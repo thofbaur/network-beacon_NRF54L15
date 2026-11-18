@@ -1,0 +1,16 @@
+# Test suite dependencies (Windows, macOS, Linux).
+pytest>=8.0
+# Portable C compiler for the firmware unit tests when no gcc/clang is
+# installed (used as "python -m ziglang cc").
+ziglang>=0.13
+# Logger and Scan_New_Tags scripts under test.
+pyserial>=3.5
+pylink-square>=1.3.0
+# Hardware tests: BLE central on the computer's Bluetooth adapter.
+bleak>=0.22
+# Coverage report (pytest --coverage). C coverage additionally needs LLVM:
+#   Windows: winget install BrechtSanders.WinLibs.POSIX.UCRT.LLVM
+#   macOS:   Xcode command line tools    Linux: clang + llvm
+coverage>=7.6
+# gcov report for the C coverage (gcc route)
+gcovr>=7.0

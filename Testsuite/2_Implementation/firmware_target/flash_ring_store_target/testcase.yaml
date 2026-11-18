@@ -1,0 +1,6 @@
+tests:
+  dsa.flash_ring_store.target:
+    platform_allow:
+      - nrf54l15dk/nrf54l15/cpuapp/ns
+    tags: dsa storage
+    harness: ztest

@@ -1,0 +1,7 @@
+# Environment (recreate with 0_Environment/setup.ps1 or setup.sh)
+0_Environment/.venv/
+0_Environment/boards.toml
+# Regenerable build output (C unit tests, west builds)
+.build/
+__pycache__/
+.pytest_cache/
