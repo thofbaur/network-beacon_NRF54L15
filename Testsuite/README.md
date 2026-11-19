@@ -12,7 +12,7 @@ and Scan_New_Tags firmware, the shared protocol header and the logger
 | `0_Environment/` | Setup scripts, `requirements.txt`, `boards.example.toml` (copy to `boards.toml` for hardware tests), the Python environment `.venv/` |
 | `1_Specification/` | Test specifications per class (`A_static.md` … `I_manual_tag.md`: what is tested, inputs, expected result per case), `TRACEABILITY.md` (design decision → tests), `Release_Gate.md`, `TAG_CHECKLIST.md` (blank protocol for the manual tag tests) |
 | `2_Implementation/` | Test code: `tests/` (pytest, all classes), `firmware_unit/` (host-compiled C tests), `firmware_target/` (F1 on-board app), `hil/` (hardware test support), `lib/` (shared helpers), `configs/` (test-only firmware configurations), `conftest.py` |
-| `3_Results/` | `Findings.md` (defects found, with status), one folder per recorded run, filled tag checklists |
+| `3_Results/` | `Findings.md` (defects found, with status), one folder per recorded run (git-ignored), filled tag checklists – see [Results](#results) |
 | `.build/` | Regenerable build output (C tests, west builds) – git-ignored |
 
 ## Quick start
@@ -23,6 +23,7 @@ and Scan_New_Tags firmware, the shared protocol header and the logger
 .\0_Environment\.venv\Scripts\python -m pytest
 ```
 
+The setup script also installs the git pre-commit hook (see below).
 Run pytest from `Testsuite/`. The first run compiles the C unit tests
 (about a minute with the bundled `ziglang` compiler; gcc or clang are used
 when installed).
@@ -32,7 +33,7 @@ when installed).
 | `pytest` | A, B, C, D, E3 (static) | Python only |
 | `pytest --record` | same, stored in `3_Results/<date>_<git hash>/` | – |
 | `pytest --coverage` | same, plus coverage report (firmware C + Python) | C: gcc + gcov or clang + llvm-cov (see below) |
-| `pytest --run-builds 2_Implementation/tests/build` | E1, E2 (west build matrix) | nRF Connect SDK (found automatically) |
+| `pytest --run-builds 2_Implementation/tests/build` | E1, E2 (west build matrix) | nRF Connect SDK v3.3.0 (pinned in `hil/firmware.py`, found automatically) |
 | `pytest 2_Implementation/tests/build --release-build-dir <dir>` | E3 on a real release build | a release build directory |
 | `pytest --hil 2_Implementation/tests/hil/test_f_dk_a.py` | F | DK A, `0_Environment/boards.toml` |
 | `pytest --hil 2_Implementation/tests/hil/test_g_ble.py` | G | DK A + Bluetooth adapter |
@@ -46,6 +47,19 @@ For hardware tests copy `0_Environment/boards.example.toml` to
 `0_Environment/boards.toml` and enter the J-Link serial numbers, beacon IDs
 and DK B's VCOM port. Use `--record` for every run that should be kept
 (release runs: required, see `1_Specification/Release_Gate.md`).
+
+## Results
+
+| Content of `3_Results/` | Created by | Versioned |
+|---|---|---|
+| `Findings.md` | Register of defects found by the suite, with status | yes |
+| `<YYYY-MM-DD_HHMMSS>_<git hash>[-dirty]/` | One folder per recorded run: `pytest --record` writes `junit.xml`, `run_info.md` (commit, OS, options, boards) and `summary.md` (counts, failed tests); with `--coverage` also `coverage/` (`coverage.md`, HTML reports) | no (git-ignored) |
+| `Tag_Checklists/` | Filled and signed copies of `1_Specification/TAG_CHECKLIST.md`, one per deployment | yes |
+
+Run folders stay on the computer that made them; copy a run you need to
+keep (e.g. a release record) somewhere permanent. A run on a commit with
+uncommitted changes is marked `-dirty`; release records should come from a
+clean checkout. Build output is regenerated in `.build/` (git-ignored).
 
 ## Test classes
 
@@ -78,9 +92,11 @@ It reports as `xfailed`, so a green run means nothing new is broken.
 - Finding fixed: the marked tests pass, pytest reports `XPASS(strict)` as a
   failure. Remove the marks in the same commit as the fix and close the finding.
 
-A local git pre-commit hook (`.git/hooks/pre-commit`, not versioned) runs the
-default suite (about 8 s) and blocks the commit on any failure. Bypass once
-with `git commit --no-verify`.
+A git pre-commit hook runs the default suite (about 8 s) and blocks the
+commit on any failure. Bypass once with `git commit --no-verify`. The hook is
+versioned as `0_Environment/pre-commit`; `setup.ps1` / `setup.sh` install it
+into `.git/hooks/` (an existing different hook is kept as `pre-commit.bak`).
+Rerun the setup script after changing the hook.
 
 ## Prerequisites still missing in the firmware
 
