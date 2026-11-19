@@ -1,11 +1,15 @@
 """Build and flash the firmware images the build checks and hardware tests
 need, with `west`.
 
-The nRF Connect SDK toolchain environment is applied automatically from the
-toolchain's own environment.json (found in $DSA_NCS_TOOLCHAIN, C:/ncs/toolchains,
-~/ncs/toolchains or /opt/nordic/ncs/toolchains), so no special shell is
-needed. ZEPHYR_BASE defaults to the newest SDK found next to it
-(C:/ncs/v*/zephyr, ~/ncs/v*/zephyr, /opt/nordic/ncs/v*/zephyr).
+Everything is pinned to NCS_VERSION (the SDK the firmware is developed
+with). The SDK is <root>/<NCS_VERSION>/zephyr and the toolchain is the
+bundle registered for that version in <root>/toolchains/toolchains.json;
+<root> is $DSA_NCS_ROOT or one of C:/ncs, ~/ncs, /opt/nordic/ncs. The
+toolchain environment is applied from its own environment.json, so no
+special shell is needed.
+
+Overrides: DSA_NCS_VERSION, DSA_NCS_ROOT, DSA_NCS_TOOLCHAIN, ZEPHYR_BASE
+(must point to an SDK of NCS_VERSION).
 """
 
 from __future__ import annotations
@@ -46,14 +50,40 @@ class Image:
 
 NCS_ROOTS = [Path("C:/ncs"), Path.home() / "ncs", Path("/opt/nordic/ncs")]
 
+# The nRF Connect SDK version the firmware is developed and released with.
+# Change it here (or set DSA_NCS_VERSION) when the firmware moves to a new SDK.
+NCS_VERSION = os.environ.get("DSA_NCS_VERSION", "v3.3.0")
+
+
+def _ncs_roots() -> list[Path]:
+    explicit = os.environ.get("DSA_NCS_ROOT")
+    return [Path(explicit)] if explicit else NCS_ROOTS
+
+
+def sdk_version(zephyr: Path) -> str | None:
+    """'v3.3.0' read from <sdk>/nrf/VERSION next to a zephyr folder."""
+    version_file = zephyr.parent / "nrf" / "VERSION"
+    if not version_file.exists():
+        return None
+    return "v" + version_file.read_text(encoding="utf-8").strip()
+
 
 def toolchain_dir() -> Path | None:
+    """The toolchain bundle that the NCS installer registered for NCS_VERSION
+    (toolchains/toolchains.json)."""
     explicit = os.environ.get("DSA_NCS_TOOLCHAIN")
     if explicit:
         return Path(explicit)
-    for root in NCS_ROOTS:
-        for env_json in sorted((root / "toolchains").glob("*/environment.json")):
-            return env_json.parent
+    for root in _ncs_roots():
+        index = root / "toolchains" / "toolchains.json"
+        if not index.exists():
+            continue
+        for entry in json.loads(index.read_text(encoding="utf-8")):
+            for tc in entry.get("toolchains", []):
+                if NCS_VERSION in tc.get("ncs_versions", []):
+                    candidate = root / "toolchains" / tc["identifier"]["bundle_id"]
+                    if (candidate / "environment.json").exists():
+                        return candidate
     return None
 
 
@@ -71,26 +101,40 @@ def _env() -> dict[str, str]:
                 env[var["key"]] = paths + os.pathsep + env[var["key"]]
             else:
                 env[var["key"]] = paths
-    env.setdefault("ZEPHYR_BASE", str(zephyr_base()))
+    env["ZEPHYR_BASE"] = str(zephyr_base())
     return env
 
 
 def west() -> str:
+    if toolchain_dir() is None:
+        raise FirmwareError(
+            f"no nRF Connect SDK toolchain for {NCS_VERSION} found in "
+            f"{', '.join(p.as_posix() for p in _ncs_roots())}: install it with the nRF Connect "
+            "toolchain manager, or set DSA_NCS_TOOLCHAIN")
     path = shutil.which("west", path=_env().get("PATH"))
     if not path:
-        raise FirmwareError("'west' not found: install the nRF Connect SDK toolchain or set DSA_NCS_TOOLCHAIN")
+        raise FirmwareError(f"'west' not found in the toolchain {toolchain_dir()}")
     return path
 
 
 def zephyr_base() -> Path:
+    """The Zephyr folder of NCS_VERSION. An explicit ZEPHYR_BASE (often set
+    globally by the nRF Connect extension) is used only if it is that version."""
     env = os.environ.get("ZEPHYR_BASE")
     if env:
+        found = sdk_version(Path(env))
+        if found != NCS_VERSION:
+            raise FirmwareError(
+                f"ZEPHYR_BASE={env} is nRF Connect SDK {found or 'of unknown version'}, the firmware "
+                f"uses {NCS_VERSION}: unset ZEPHYR_BASE or set DSA_NCS_VERSION")
         return Path(env)
-    for root in NCS_ROOTS:
-        for candidate in sorted(root.glob("v*/zephyr"), reverse=True):
-            if candidate.is_dir():
-                return candidate
-    raise FirmwareError("ZEPHYR_BASE not set and no nRF Connect SDK found in C:/ncs, ~/ncs or /opt/nordic/ncs")
+    for root in _ncs_roots():
+        candidate = root / NCS_VERSION / "zephyr"
+        if candidate.is_dir():
+            return candidate
+    raise FirmwareError(
+        f"nRF Connect SDK {NCS_VERSION} not found in {', '.join(p.as_posix() for p in _ncs_roots())}: "
+        "install it, or set DSA_NCS_ROOT / ZEPHYR_BASE")
 
 
 def build(image: Image, pristine: bool = False) -> Path:
@@ -101,7 +145,9 @@ def build(image: Image, pristine: bool = False) -> Path:
     if image.confs:
         cmd.append("-DEXTRA_CONF_FILE=" + ";".join(str(c) for c in image.confs))
     cmd += [f"-D{d}" for d in image.defines]
-    result = subprocess.run(cmd, cwd=REPO, env=_env(), capture_output=True, text=True)
+    # Run from the app folder: west computes a relative source path, which
+    # fails on Windows when the repository and the SDK are on different drives.
+    result = subprocess.run(cmd, cwd=image.app, env=_env(), capture_output=True, text=True)
     if result.returncode != 0:
         raise FirmwareError(f"build {image.name} failed:\n{' '.join(cmd)}\n{result.stdout[-4000:]}\n{result.stderr[-4000:]}")
     return hex_file(image)

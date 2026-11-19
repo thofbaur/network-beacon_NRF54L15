@@ -13,11 +13,13 @@ import pytest
 import ble
 import firmware
 from dut import Dut
+from findings import finding
 from repo import BEACON, PREREQ, read_text
 
 pytestmark = pytest.mark.hil
 
 
+@finding(1)
 def test_f1_flash_ring_store_on_target(lab):
     image = firmware.f1_target()
     lab.ensure_a(image)

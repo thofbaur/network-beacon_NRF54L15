@@ -5,3 +5,5 @@
 .build/
 __pycache__/
 .pytest_cache/
+# Recorded test runs (pytest --record): kept locally, not versioned
+3_Results/20*/

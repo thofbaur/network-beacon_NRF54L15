@@ -1,8 +1,13 @@
 # Class E – Build checks
 
 E1/E2 run west builds and are opt-in (`pytest --run-builds 2_Implementation/tests/build`).
-The nRF Connect SDK toolchain is found automatically (`C:/ncs`, `~/ncs`,
-`/opt/nordic/ncs` or `$DSA_NCS_TOOLCHAIN`). Build directories:
+Builds use the SDK version the firmware is developed with, pinned in
+`hil/firmware.py` (`NCS_VERSION = "v3.3.0"`): SDK `<root>/v3.3.0/zephyr`
+and the toolchain registered for v3.3.0 in `<root>/toolchains/toolchains.json`,
+`<root>` being `C:/ncs`, `~/ncs` or `/opt/nordic/ncs`. If that version is not
+installed, or `ZEPHYR_BASE` points to another version, the tests skip with
+the reason. Overrides: `DSA_NCS_VERSION`, `DSA_NCS_ROOT`,
+`DSA_NCS_TOOLCHAIN`, `ZEPHYR_BASE`. Build directories:
 `Testsuite/.build/west/<image>`. E3's static part always runs.
 
 **Inputs of a build case:** application directory, board target, extra

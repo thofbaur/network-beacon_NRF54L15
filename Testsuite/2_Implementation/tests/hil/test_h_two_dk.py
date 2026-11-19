@@ -202,6 +202,8 @@ def test_h6_base_recovers_from_beacon_reset_mid_transfer(hil_beacon):
 
 
 def test_h7_scan_new_tags_workflow(lab, tmp_path):
+    if lab.boards.dk_b is None or not lab.boards.dk_b.vcom:
+        pytest.skip("DK B (with vcom) not configured in boards.toml")
     lab.ensure_a(firmware.nordic_lbs())
     lab.ensure_b(firmware.scan_new_tags())
     with lab.dk_b_uart(ScannerLink) as scanner:

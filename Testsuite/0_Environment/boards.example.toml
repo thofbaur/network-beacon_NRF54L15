@@ -21,5 +21,6 @@ beacon_id = 253
 beacon_ids = []
 
 [ble]
-# Optional: Bluetooth adapter name/address for bleak (default adapter if empty).
+# Optional, Linux only: BlueZ adapter for bleak, e.g. "hci1" (default adapter
+# if empty). Windows and macOS always use the system adapter: leave it empty.
 adapter = ""

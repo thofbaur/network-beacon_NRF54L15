@@ -12,11 +12,16 @@ same decoder as production.
 
 macOS hides device addresses from applications, so beacons are identified
 by the ID byte of their manufacturer data (ADV_POS_ID), never by address.
+
+Adapter: the system default, or the one named in boards.toml [ble] adapter
+(use_adapter). Choosing an adapter is a BlueZ feature (Linux, e.g. "hci1");
+on Windows and macOS the setting must stay empty.
 """
 
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
 from dataclasses import dataclass, field
 from typing import Callable
@@ -27,6 +32,21 @@ from repo import dsa_logger
 NUS_SERVICE = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
 NUS_RX = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"  # central -> beacon (write)
 NUS_TX = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"  # beacon -> central (notify)
+
+_adapter: str | None = None
+
+
+def use_adapter(name: str | None) -> None:
+    """Select the Bluetooth adapter for all scans and connections (None = default)."""
+    global _adapter, _adapter_problem
+    if name != _adapter:
+        _adapter = name or None
+        _adapter_problem = False  # probe again
+
+
+def _bluez() -> dict:
+    """Backend arguments that select the configured adapter."""
+    return {"bluez": {"adapter": _adapter}} if _adapter else {}
 
 
 @dataclass
@@ -70,12 +90,40 @@ async def _scan_for(beacon_id: int, timeout: float, names=("DSA", "DST", "DSL"))
             found.append(Advert(adv.local_name, mfg, adv.rssi, device, time.monotonic()))
             event.set()
 
-    async with BleakScanner(callback):
+    async with BleakScanner(callback, **_bluez()):
         try:
             await asyncio.wait_for(event.wait(), timeout)
         except asyncio.TimeoutError:
             raise TimeoutError(f"beacon {beacon_id} not seen within {timeout}s") from None
     return found[-1]
+
+
+_adapter_problem: str | None | bool = False  # False = not probed yet
+
+
+def adapter_problem() -> str | None:
+    """None if the computer has a usable Bluetooth adapter, else the reason.
+    Probed once per session with a short scan."""
+    global _adapter_problem
+    if _adapter_problem is False:
+        from bleak import BleakScanner
+        from bleak.exc import BleakError  # incl. BleakBluetoothNotAvailableError
+
+        async def probe():
+            async with BleakScanner(**_bluez()):
+                await asyncio.sleep(0.2)
+
+        if _adapter and not sys.platform.startswith("linux"):
+            _adapter_problem = (f"boards.toml [ble] adapter = {_adapter!r}: choosing an adapter needs "
+                                f"Linux (BlueZ); leave it empty on {sys.platform}")
+            return _adapter_problem
+        try:
+            asyncio.run(probe())
+            _adapter_problem = None
+        except BleakError as exc:
+            where = f"adapter {_adapter!r}" if _adapter else "on this computer"
+            _adapter_problem = f"no usable Bluetooth adapter {where} ({exc.args[0] if exc.args else exc})"
+    return _adapter_problem
 
 
 def find_beacon(beacon_id: int, timeout: float = 20.0) -> Advert:
@@ -92,7 +140,7 @@ async def _collect_adverts(beacon_id: int, seconds: float) -> list[Advert]:
         if mfg and len(mfg) >= 3 and mfg[0] == beacon_id:
             adverts.append(Advert(adv.local_name, mfg, adv.rssi, device, time.monotonic()))
 
-    async with BleakScanner(callback):
+    async with BleakScanner(callback, **_bluez()):
         await asyncio.sleep(seconds)
     return adverts
 
@@ -170,7 +218,7 @@ async def _readout(
         result.disconnected_by_peer = True
         disconnected.set()
 
-    async with BleakClient(advert.device, disconnected_callback=on_disconnect) as client:
+    async with BleakClient(advert.device, disconnected_callback=on_disconnect, **_bluez()) as client:
         result.mtu = getattr(client, "mtu_size", 0)
 
         def on_notify(_char, data: bytearray):
@@ -234,7 +282,8 @@ async def _idle_connection(advert: Advert, seconds: float) -> float | None:
 
     disconnected = asyncio.Event()
     start = time.monotonic()
-    async with BleakClient(advert.device, disconnected_callback=lambda c: disconnected.set()) as client:
+    async with BleakClient(advert.device, disconnected_callback=lambda c: disconnected.set(),
+                            **_bluez()) as client:
         await client.start_notify(NUS_TX, lambda c, d: None)
         try:
             await asyncio.wait_for(disconnected.wait(), seconds)

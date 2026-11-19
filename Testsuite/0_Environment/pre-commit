@@ -1,0 +1,18 @@
+#!/bin/sh
+# Regression check: default test suite (classes A-D, static E3; no hardware, no builds).
+# Known defects are strict xfails (Testsuite/2_Implementation/lib/findings.py), so any
+# failure is new - or a fixed finding whose @finding mark must be removed.
+# Bypass once with: git commit --no-verify
+# Versioned in Testsuite/0_Environment/pre-commit; setup.ps1 / setup.sh install it.
+ROOT="$(git rev-parse --show-toplevel)"
+PY="$ROOT/Testsuite/0_Environment/.venv/Scripts/python.exe"
+[ -x "$PY" ] || PY="$ROOT/Testsuite/0_Environment/.venv/bin/python"
+if [ ! -x "$PY" ]; then
+    echo "pre-commit: Testsuite venv not found - run Testsuite/0_Environment/setup.ps1 (Windows) or setup.sh. Check skipped."
+    exit 0
+fi
+cd "$ROOT/Testsuite" || exit 1
+"$PY" -m pytest -q --tb=line -rfE || {
+    echo "pre-commit: tests failed - commit blocked (bypass: git commit --no-verify)."
+    exit 1
+}

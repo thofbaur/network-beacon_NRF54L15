@@ -66,6 +66,7 @@ class Lab:
         time.sleep(1.0)
 
     def advert_a(self, timeout: float = 20.0) -> ble.Advert:
+        require_ble()
         return ble.find_beacon(self.boards.dk_a.beacon_id, timeout)
 
     # ---- DK B -------------------------------------------------------------
@@ -83,12 +84,29 @@ class Lab:
         self._close_a()
 
 
+def require_ble() -> None:
+    problem = ble.adapter_problem()
+    if problem:
+        pytest.skip(problem)
+
+
+@pytest.fixture(autouse=True)
+def _skip_ble_without_adapter(request):
+    """Skip `ble` tests before any board is programmed when the computer has
+    no Bluetooth adapter (unmarked tests are caught in Lab.advert_a)."""
+    if request.node.get_closest_marker("ble") and request.config.getoption("--hil"):
+        request.getfixturevalue("boards")  # selects the configured adapter first
+        require_ble()
+
+
 @pytest.fixture(scope="session")
 def boards(pytestconfig) -> Boards:
     path = Path(pytestconfig.getoption("--boards"))
     if not path.exists():
         pytest.skip(f"{path} not found: copy 0_Environment/boards.example.toml to 0_Environment/boards.toml")
-    return load_boards(path)
+    loaded = load_boards(path)
+    ble.use_adapter(loaded.ble_adapter)
+    return loaded
 
 
 @pytest.fixture(scope="session")
